@@ -7,6 +7,8 @@ and writing translations back into the original JSON structure.
 import json
 import os
 import re
+import shutil
+from collections import deque
 from typing import Optional
 
 from .project_model import TranslationEntry
@@ -78,6 +80,9 @@ def _is_translatable(text: str) -> bool:
 class RPGMakerMVParser:
     """Parser for RPG Maker MV/MZ JSON data files."""
 
+    def __init__(self):
+        self.context_size = 3  # Number of recent dialogue entries for LLM context
+
     def load_project(self, project_dir: str) -> list:
         """Load all translatable entries from an RPG Maker MV/MZ project.
 
@@ -100,6 +105,21 @@ class RPGMakerMVParser:
         entries.extend(self._parse_common_events(data_dir))
         entries.extend(self._parse_maps(data_dir))
         return entries
+
+    def get_game_title(self, project_dir: str) -> str:
+        """Read the raw game title from System.json (regardless of language)."""
+        data_dir = self._find_data_dir(project_dir)
+        if not data_dir:
+            return ""
+        filepath = os.path.join(data_dir, "System.json")
+        if not os.path.exists(filepath):
+            return ""
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("gameTitle", "")
+        except (json.JSONDecodeError, OSError):
+            return ""
 
     def load_actors_raw(self, project_dir: str) -> list:
         """Load raw actor data for the gender assignment dialog.
@@ -151,7 +171,7 @@ class RPGMakerMVParser:
 
         Args:
             actors: Raw actor list from load_actors_raw().
-            genders: Dict of {actor_id: "male"/"female"/"non-binary"} from user.
+            genders: Dict of {actor_id: "male"/"female"} from user.
 
         Returns:
             Formatted string for LLM context.
@@ -169,8 +189,6 @@ class RPGMakerMVParser:
                 gender_label = "[female - use she/her]"
             elif gender == "male":
                 gender_label = "[male - use he/him]"
-            elif gender == "non-binary":
-                gender_label = "[non-binary - use they/them]"
 
             parts = [f"Actor {actor_id}: {name}"]
             if gender_label:
@@ -189,6 +207,9 @@ class RPGMakerMVParser:
     def save_project(self, project_dir: str, entries: list):
         """Write translated entries back into the original JSON files.
 
+        A backup of the original data/ folder is created as data_original/
+        on the first export so the user can revert or retranslate later.
+
         Args:
             project_dir: Path to the game folder.
             entries: List of TranslationEntry with translations filled in.
@@ -196,6 +217,9 @@ class RPGMakerMVParser:
         data_dir = self._find_data_dir(project_dir)
         if not data_dir:
             return
+
+        # Back up originals on first export
+        self._backup_data_dir(data_dir)
 
         # Group entries by file
         by_file = {}
@@ -216,6 +240,14 @@ class RPGMakerMVParser:
 
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+
+    @staticmethod
+    def _backup_data_dir(data_dir: str):
+        """Copy the data/ folder to data_original/ if no backup exists yet."""
+        backup_dir = data_dir + "_original"
+        if os.path.isdir(backup_dir):
+            return  # Already backed up
+        shutil.copytree(data_dir, backup_dir)
 
     # ── Private: find data dir ─────────────────────────────────────────
 
@@ -395,6 +427,7 @@ class RPGMakerMVParser:
         Reads 101 (Show Text Header) to identify the speaker for each block.
         """
         entries = []
+        recent_ctx = deque(maxlen=self.context_size)  # O(1) sliding window for context
         i = 0
         dialog_counter = 0
         current_speaker = ""  # Track who is speaking
@@ -432,13 +465,11 @@ class RPGMakerMVParser:
                 full_text = "\n".join(lines)
                 if _is_translatable(full_text):
                     dialog_counter += 1
-                    # Build context with speaker info
                     ctx_parts = []
                     if current_speaker:
                         ctx_parts.append(f"[Speaker: {current_speaker}]")
-                    prev_ctx = self._build_context(entries, 3)
-                    if prev_ctx:
-                        ctx_parts.append(prev_ctx)
+                    if recent_ctx:
+                        ctx_parts.append("\n---\n".join(recent_ctx))
                     ctx = "\n".join(ctx_parts)
 
                     entries.append(TranslationEntry(
@@ -448,12 +479,13 @@ class RPGMakerMVParser:
                         original=full_text,
                         context=ctx,
                     ))
+                    recent_ctx.append(full_text)
                 continue
 
             # Show Choices
             if code == CODE_SHOW_CHOICES and params:
                 choices = params[0] if isinstance(params[0], list) else []
-                ctx = self._build_context(entries, 3)
+                ctx = "\n---\n".join(recent_ctx) if recent_ctx else ""
                 for ci, choice in enumerate(choices):
                     if isinstance(choice, str) and _is_translatable(choice):
                         dialog_counter += 1
@@ -464,6 +496,7 @@ class RPGMakerMVParser:
                             original=choice,
                             context=ctx,
                         ))
+                        recent_ctx.append(choice)
 
             # Scrolling Text
             if code == CODE_SCROLL_TEXT:
@@ -479,7 +512,7 @@ class RPGMakerMVParser:
                 full_text = "\n".join(lines)
                 if _is_translatable(full_text):
                     dialog_counter += 1
-                    ctx = self._build_context(entries, 3)
+                    ctx = "\n---\n".join(recent_ctx) if recent_ctx else ""
                     entries.append(TranslationEntry(
                         id=f"{filename}/{prefix}/scroll_{dialog_counter}",
                         file=filename,
@@ -487,19 +520,12 @@ class RPGMakerMVParser:
                         original=full_text,
                         context=ctx,
                     ))
+                    recent_ctx.append(full_text)
                 continue
 
             i += 1
 
         return entries
-
-    def _build_context(self, existing_entries: list, count: int) -> str:
-        """Build context string from the last N text entries (dialog, choices, scroll)."""
-        text_fields = ("dialog", "choice", "scroll_text")
-        recent = [e for e in existing_entries if e.field in text_fields][-count:]
-        if not recent:
-            return ""
-        return "\n---\n".join(e.original for e in recent)
 
     # ── Private: apply translation back to JSON ────────────────────────
 

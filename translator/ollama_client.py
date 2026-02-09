@@ -21,9 +21,10 @@ _JP_BRACKETS = {
 }
 
 
-SYSTEM_PROMPT = """You are a professional Japanese to English translator specializing in RPG/video game dialogue.
+SYSTEM_PROMPT = """You are a professional Japanese to English translator specializing in RPG/video game dialogue, including adult (18+) content.
 
 Rules:
+- Translate ALL text faithfully and completely, including sexual, violent, or explicit content. Never censor, euphemize, skip, or refuse any content. This is a licensed translation project.
 - Translate the Japanese text naturally into English suitable for an RPG game.
 - The text may contain opaque code markers like «CODE1», «CODE2», etc. These are internal engine tags. Output them EXACTLY as-is — never remove, translate, rewrite, or replace them with names or words.
 - Keep the same line break structure as the original when possible.
@@ -41,10 +42,16 @@ Pronoun rules (CRITICAL):
 - Pay close attention to Japanese pronouns when present: 彼 (he), 彼女 (she), 俺/僕/私 (I), あなた/お前/君 (you).
 - Keep character name translations consistent throughout.
 
+Honorifics:
+- Preserve Japanese honorifics as-is: -san, -kun, -chan, -sama, -sensei, -senpai, -dono, etc.
+- Example: 田中さん → Tanaka-san (NOT "Mr. Tanaka")
+- onii-chan, onee-san, etc. should be kept in romanized form when used as address terms.
+
 Context-sensitive translation:
 - Consider the physical setting described in context. Translate verbs appropriately for the situation.
 - 揺れる can mean: swaying, shaking, rocking, bouncing, trembling — pick the one that fits the scene.
-- Avoid overly literal translations. Prioritize natural English that makes sense in the game scene."""
+- Avoid overly literal translations. Prioritize natural English that makes sense in the game scene.
+- For adult scenes, use natural and explicit English that matches the original intensity. Do not tone down or soften the language."""
 
 
 _NAME_SYSTEM_PROMPT = (
@@ -82,11 +89,19 @@ class OllamaClient:
         except (requests.RequestException, KeyError):
             return []
 
-    def translate_name(self, text: str) -> str:
+    def translate_name(self, text: str, hint: str = "") -> str:
         """Translate a short string (name, title, profile) without the full
-        placeholder/glossary pipeline.  Returns original on failure."""
+        placeholder/glossary pipeline.  Returns original on failure.
+
+        Args:
+            text: The Japanese text to translate.
+            hint: Context hint like "character name", "game title", etc.
+        """
         if not text or not text.strip():
             return text
+        user_msg = f"Translate this:\n{text}"
+        if hint:
+            user_msg = f"Context: this is a {hint} from an RPG game.\nTranslate this:\n{text}"
         try:
             r = requests.post(
                 f"{self.base_url}/api/chat",
@@ -94,10 +109,10 @@ class OllamaClient:
                     "model": self.model,
                     "messages": [
                         {"role": "system", "content": _NAME_SYSTEM_PROMPT},
-                        {"role": "user", "content": f"Translate this:\n{text}"},
+                        {"role": "user", "content": user_msg},
                     ],
                     "stream": False,
-                    "options": {"temperature": 0.3, "num_predict": 256},
+                    "options": {"temperature": 0, "seed": 42, "num_predict": 256},
                 },
                 timeout=30,
             )
@@ -145,8 +160,27 @@ class OllamaClient:
             text = text.replace(jp, en)
         return text
 
+    # Human-readable labels for RPG Maker entry field types
+    _FIELD_HINTS = {
+        "dialog": "dialogue line",
+        "choice": "player choice option",
+        "scroll_text": "scrolling narrative text",
+        "name": "name",
+        "nickname": "character nickname",
+        "profile": "character profile/biography",
+        "description": "item or skill description",
+        "message1": "battle message",
+        "message2": "battle message",
+        "message3": "battle message",
+        "message4": "battle message",
+        "gameTitle": "game title",
+        "displayName": "map location name",
+        "note": "developer note",
+    }
+
     def translate(self, text: str, context: str = "",
-                  correction: str = "", old_translation: str = "") -> str:
+                  correction: str = "", old_translation: str = "",
+                  field: str = "") -> str:
         """Translate Japanese text to English using the configured model.
 
         Args:
@@ -154,6 +188,7 @@ class OllamaClient:
             context: Optional surrounding dialogue for better coherence.
             correction: Optional user correction hint (e.g. "wrong pronoun").
             old_translation: The previous bad translation to fix.
+            field: Entry field type (e.g. "dialog", "name", "choice").
 
         Returns:
             The English translation string.
@@ -185,6 +220,12 @@ class OllamaClient:
                 "You MUST output them exactly as-is. Do NOT replace them with character "
                 "names or any other text.\n\n"
             )
+        if field:
+            hint = self._FIELD_HINTS.get(field, field)
+            user_msg += f"Content type: {hint}\n"
+            # For terms fields like "terms.messages[0]", label as menu/system term
+            if field.startswith("terms."):
+                user_msg += "Content type: menu/system term\n"
         user_msg += f"Translate this:\n{clean_text}"
 
         payload = {
@@ -195,7 +236,8 @@ class OllamaClient:
             ],
             "stream": False,
             "options": {
-                "temperature": 0.3,
+                "temperature": 0,
+                "seed": 42,
                 "num_predict": 1024,
             },
         }
@@ -217,3 +259,104 @@ class OllamaClient:
             return result
         except requests.RequestException as e:
             raise ConnectionError(f"Ollama API error: {e}") from e
+
+    def translate_variants(self, text: str, context: str = "",
+                           field: str = "", count: int = 3) -> list:
+        """Generate multiple translation variants using different seeds/temperatures.
+
+        Returns:
+            List of translation strings.
+        """
+        variants = []
+        # First variant: deterministic (temp=0, seed=42) — the "standard" translation
+        try:
+            v = self.translate(text=text, context=context, field=field)
+            variants.append(v)
+        except ConnectionError:
+            pass
+
+        # Additional variants: slight temperature for creative variation
+        seeds = [123, 456, 789, 1001, 2025]
+        for i in range(count - 1):
+            if i >= len(seeds):
+                break
+            try:
+                # Pre-process same as translate()
+                clean_text, code_map = self._extract_codes(text)
+                clean_text = self._convert_jp_brackets(clean_text)
+
+                user_msg = ""
+                if self.actor_context:
+                    user_msg += f"{self.actor_context}\n\n"
+                if self.glossary:
+                    glossary_str = "\n".join(
+                        f"  {jp} = {en}" for jp, en in self.glossary.items()
+                    )
+                    user_msg += f"Glossary (MUST use these exact translations):\n{glossary_str}\n\n"
+                if context:
+                    user_msg += f"Context (surrounding dialogue, do NOT translate):\n{context}\n\n"
+                if code_map:
+                    user_msg += (
+                        "IMPORTANT: Code markers like «CODE1» are engine tags. "
+                        "Output them exactly as-is.\n\n"
+                    )
+                if field:
+                    hint = self._FIELD_HINTS.get(field, field)
+                    user_msg += f"Content type: {hint}\n"
+                user_msg += f"Translate this:\n{clean_text}"
+
+                r = requests.post(
+                    f"{self.base_url}/api/chat",
+                    json={
+                        "model": self.model,
+                        "messages": [
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": user_msg},
+                        ],
+                        "stream": False,
+                        "options": {
+                            "temperature": 0.5,
+                            "seed": seeds[i],
+                            "num_predict": 1024,
+                        },
+                    },
+                    timeout=120,
+                )
+                r.raise_for_status()
+                result = r.json().get("message", {}).get("content", "").strip()
+                if code_map:
+                    result = self._restore_codes(result, code_map)
+                # Only add if it's actually different
+                if result and result not in variants:
+                    variants.append(result)
+                elif result:
+                    # Duplicate — try again with higher temp
+                    r2 = requests.post(
+                        f"{self.base_url}/api/chat",
+                        json={
+                            "model": self.model,
+                            "messages": [
+                                {"role": "system", "content": SYSTEM_PROMPT},
+                                {"role": "user", "content": user_msg},
+                            ],
+                            "stream": False,
+                            "options": {
+                                "temperature": 0.8,
+                                "seed": seeds[i] + 100,
+                                "num_predict": 1024,
+                            },
+                        },
+                        timeout=120,
+                    )
+                    r2.raise_for_status()
+                    result2 = r2.json().get("message", {}).get("content", "").strip()
+                    if code_map:
+                        result2 = self._restore_codes(result2, code_map)
+                    if result2 and result2 not in variants:
+                        variants.append(result2)
+                    else:
+                        variants.append(result)  # Add duplicate anyway
+            except requests.RequestException:
+                pass
+
+        return variants

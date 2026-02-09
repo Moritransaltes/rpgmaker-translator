@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 
-GENDER_OPTIONS = ["unknown", "female", "male", "non-binary"]
+GENDER_OPTIONS = ["unknown", "female", "male"]
 
 
 class ActorGenderDialog(QDialog):
@@ -30,7 +30,7 @@ class ActorGenderDialog(QDialog):
         layout = QVBoxLayout(self)
 
         layout.addWidget(QLabel(
-            "Assign genders so the translator uses correct pronouns (he/she/they).\n"
+            "Assign genders so the translator uses correct pronouns (he/she).\n"
             "Auto-detected genders are pre-filled but may be wrong — please verify."
         ))
 

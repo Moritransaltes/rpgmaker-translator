@@ -4,19 +4,23 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLineEdit, QComboBox, QPlainTextEdit, QPushButton,
     QLabel, QGroupBox, QMessageBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QAbstractItemView, QTabWidget, QWidget,
+    QHeaderView, QAbstractItemView, QTabWidget, QWidget, QSpinBox,
+    QCheckBox,
 )
 from PyQt6.QtCore import Qt
 
 from ..ollama_client import OllamaClient, SYSTEM_PROMPT
+from ..rpgmaker_mv import RPGMakerMVParser
 
 
 class SettingsDialog(QDialog):
     """Dialog for configuring Ollama URL, model, prompt, and glossary."""
 
-    def __init__(self, client: OllamaClient, parent=None):
+    def __init__(self, client: OllamaClient, parent=None, parser: RPGMakerMVParser = None, dark_mode: bool = True):
         super().__init__(parent)
         self.client = client
+        self.parser = parser
+        self.dark_mode = dark_mode
         self.setWindowTitle("Settings")
         self.setMinimumSize(600, 500)
         self._build_ui()
@@ -73,6 +77,29 @@ class SettingsDialog(QDialog):
         prompt_layout.addWidget(reset_btn, alignment=Qt.AlignmentFlag.AlignLeft)
 
         conn_layout.addWidget(prompt_group)
+
+        # Translation options
+        opts_group = QGroupBox("Translation Options")
+        opts_form = QFormLayout(opts_group)
+
+        self.context_spin = QSpinBox()
+        self.context_spin.setRange(0, 20)
+        self.context_spin.setToolTip(
+            "Number of recent dialogue lines included as context for the LLM.\n"
+            "Higher = better coherence but slower and uses more VRAM."
+        )
+        opts_form.addRow("Context window size:", self.context_spin)
+
+        conn_layout.addWidget(opts_group)
+
+        # Appearance
+        appear_group = QGroupBox("Appearance")
+        appear_form = QFormLayout(appear_group)
+
+        self.dark_mode_check = QCheckBox("Enable dark mode (Catppuccin theme)")
+        appear_form.addRow(self.dark_mode_check)
+
+        conn_layout.addWidget(appear_group)
         tabs.addTab(conn_tab, "Connection && Prompt")
 
         # ── Tab 2: Glossary ────────────────────────────────────────
@@ -126,6 +153,8 @@ class SettingsDialog(QDialog):
         self.url_edit.setText(self.client.base_url)
         self.model_combo.setCurrentText(self.client.model)
         self.prompt_edit.setPlainText(SYSTEM_PROMPT)
+        self.context_spin.setValue(self.parser.context_size if self.parser else 3)
+        self.dark_mode_check.setChecked(self.dark_mode)
         self._load_glossary()
         self._refresh_models()
 
@@ -197,6 +226,9 @@ class SettingsDialog(QDialog):
         self.client.base_url = self.url_edit.text().strip() or "http://localhost:11434"
         self.client.model = self.model_combo.currentText().strip()
         self.client.glossary = self._get_glossary()
+        if self.parser:
+            self.parser.context_size = self.context_spin.value()
+        self.dark_mode = self.dark_mode_check.isChecked()
         self.accept()
 
     def get_system_prompt(self) -> str:

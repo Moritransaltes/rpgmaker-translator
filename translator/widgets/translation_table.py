@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QComboBox, QLabel, QMenu, QAbstractItemView, QHeaderView,
     QInputDialog, QTextEdit, QSplitter, QGroupBox,
 )
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 from PyQt6.QtGui import QColor, QAction, QTextCursor
 
 from ..project_model import TranslationEntry
@@ -20,12 +20,20 @@ _CODE_RE = re.compile(
 )
 
 
-# Status colors
-STATUS_COLORS = {
+# Status colors — light mode
+STATUS_COLORS_LIGHT = {
     "untranslated": QColor(255, 230, 230),   # light red
     "translated":   QColor(255, 255, 210),   # light yellow
     "reviewed":     QColor(210, 255, 210),   # light green
     "skipped":      QColor(230, 230, 230),   # light gray
+}
+
+# Status colors — dark mode (muted, readable with light text)
+STATUS_COLORS_DARK = {
+    "untranslated": QColor(80, 40, 40),      # dark red
+    "translated":   QColor(70, 65, 30),      # dark yellow
+    "reviewed":     QColor(30, 70, 40),      # dark green
+    "skipped":      QColor(50, 50, 55),      # dark gray
 }
 
 STATUS_ICONS = {
@@ -48,6 +56,7 @@ class TranslationTable(QWidget):
 
     translate_requested = pyqtSignal(list)    # List of entry IDs to translate
     retranslate_correction = pyqtSignal(str, str)  # entry_id, user correction hint
+    variant_requested = pyqtSignal(str)       # entry_id — request translation variants
     status_changed = pyqtSignal()             # Emitted when any status changes
 
     def __init__(self, parent=None):
@@ -55,6 +64,11 @@ class TranslationTable(QWidget):
         self._entries = []
         self._visible_entries = []
         self._updating = False
+        self._dark_mode = True  # Match main_window default
+        self._filter_timer = QTimer(self)
+        self._filter_timer.setSingleShot(True)
+        self._filter_timer.setInterval(250)  # 250ms debounce
+        self._filter_timer.timeout.connect(self._apply_filter)
         self._build_ui()
 
     def _build_ui(self):
@@ -67,7 +81,7 @@ class TranslationTable(QWidget):
         filter_row.addWidget(QLabel("Search:"))
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Filter by text...")
-        self.search_edit.textChanged.connect(self._apply_filter)
+        self.search_edit.textChanged.connect(self._schedule_filter)
         filter_row.addWidget(self.search_edit)
 
         filter_row.addWidget(QLabel("Status:"))
@@ -146,10 +160,24 @@ class TranslationTable(QWidget):
         self.stats_label = QLabel("No entries loaded")
         layout.addWidget(self.stats_label)
 
+    @property
+    def _status_colors(self):
+        return STATUS_COLORS_DARK if self._dark_mode else STATUS_COLORS_LIGHT
+
+    def set_dark_mode(self, dark: bool):
+        """Switch row colors between dark and light palettes."""
+        self._dark_mode = dark
+        if self._visible_entries:
+            self._refresh_table()
+
     def set_entries(self, entries: list):
         """Load entries into the table."""
         self._entries = entries
         self._apply_filter()
+
+    def _schedule_filter(self):
+        """Debounce search — wait 250ms after last keystroke before filtering."""
+        self._filter_timer.start()
 
     def _apply_filter(self):
         """Filter visible entries by search text and status."""
@@ -169,40 +197,46 @@ class TranslationTable(QWidget):
     def _refresh_table(self):
         """Rebuild the table rows from visible entries."""
         self._updating = True
-        self.table.setRowCount(0)
+        self.table.setUpdatesEnabled(False)
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(self._visible_entries))
 
+        read_only = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
+
         for row, entry in enumerate(self._visible_entries):
+            color = self._status_colors.get(entry.status, QColor(255, 255, 255))
+
             # Status icon
             status_item = QTableWidgetItem(STATUS_ICONS.get(entry.status, ""))
-            status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            status_item.setFlags(read_only)
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            status_item.setBackground(color)
             self.table.setItem(row, COL_STATUS, status_item)
 
             # File
             file_item = QTableWidgetItem(entry.file)
-            file_item.setFlags(file_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            file_item.setFlags(read_only)
+            file_item.setBackground(color)
             self.table.setItem(row, COL_FILE, file_item)
 
             # Field
             field_item = QTableWidgetItem(entry.field)
-            field_item.setFlags(field_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            field_item.setFlags(read_only)
+            field_item.setBackground(color)
             self.table.setItem(row, COL_FIELD, field_item)
 
             # Original (read-only)
             orig_item = QTableWidgetItem(entry.original)
-            orig_item.setFlags(orig_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            orig_item.setFlags(read_only)
+            orig_item.setBackground(color)
             self.table.setItem(row, COL_ORIGINAL, orig_item)
 
             # Translation (editable)
             trans_item = QTableWidgetItem(entry.translation)
+            trans_item.setBackground(color)
             self.table.setItem(row, COL_TRANSLATION, trans_item)
 
-            # Row color
-            color = STATUS_COLORS.get(entry.status, QColor(255, 255, 255))
-            for col in range(5):
-                self.table.item(row, col).setBackground(color)
-
+        self.table.setUpdatesEnabled(True)
         self._updating = False
         self._update_stats()
 
@@ -223,7 +257,7 @@ class TranslationTable(QWidget):
 
     def _update_row_color(self, row: int, entry: TranslationEntry):
         """Update the background color and status icon for a row."""
-        color = STATUS_COLORS.get(entry.status, QColor(255, 255, 255))
+        color = self._status_colors.get(entry.status, QColor(255, 255, 255))
         self.table.item(row, COL_STATUS).setText(STATUS_ICONS.get(entry.status, ""))
         for col in range(5):
             item = self.table.item(row, col)
@@ -265,6 +299,10 @@ class TranslationTable(QWidget):
         retranslate_action = QAction("Retranslate with Correction...", self)
         retranslate_action.triggered.connect(self._retranslate_with_correction)
         menu.addAction(retranslate_action)
+
+        variant_action = QAction("Show Variants (3 options)...", self)
+        variant_action.triggered.connect(self._request_variants)
+        menu.addAction(variant_action)
 
         menu.addSeparator()
 
@@ -308,6 +346,12 @@ class TranslationTable(QWidget):
         )
         if ok and correction.strip():
             self.retranslate_correction.emit(entry_id, correction.strip())
+
+    def _request_variants(self):
+        """Emit signal to generate translation variants for the first selected entry."""
+        ids = self.get_selected_entry_ids()
+        if ids:
+            self.variant_requested.emit(ids[0])
 
     def _set_status(self, status: str):
         """Set status for all selected rows."""

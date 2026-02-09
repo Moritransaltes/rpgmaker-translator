@@ -32,6 +32,7 @@ class FileTreeWidget(QTreeWidget):
 
     def load_project(self, project: TranslationProject):
         """Populate tree from a loaded translation project."""
+        self.setUpdatesEnabled(False)
         self.clear()
 
         # "All Files" root item
@@ -89,6 +90,8 @@ class FileTreeWidget(QTreeWidget):
                 translated, total = project.stats_for_file(filename)
                 file_item = QTreeWidgetItem(other_item, [filename, f"{translated}/{total}"])
                 file_item.setData(0, Qt.ItemDataRole.UserRole, filename)
+
+        self.setUpdatesEnabled(True)
 
     def _on_item_clicked(self, item: QTreeWidgetItem, column: int):
         """Handle click — emit the appropriate signal."""

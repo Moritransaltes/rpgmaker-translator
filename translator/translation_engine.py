@@ -13,12 +13,16 @@ class TranslationWorker(QObject):
     entry_done = pyqtSignal(str, str)       # entry_id, translation
     finished = pyqtSignal()
     error = pyqtSignal(str, str)            # entry_id, error_message
+    checkpoint = pyqtSignal()              # emitted every N entries for auto-save
+
+    CHECKPOINT_INTERVAL = 25  # auto-save every N translated entries
 
     def __init__(self, client: OllamaClient, entries: list):
         super().__init__()
         self.client = client
         self.entries = entries
         self._cancelled = False
+        self._since_checkpoint = 0
 
     def cancel(self):
         self._cancelled = True
@@ -47,8 +51,13 @@ class TranslationWorker(QObject):
                 translation = self.client.translate(
                     text=entry.original,
                     context=entry.context,
+                    field=entry.field,
                 )
                 self.entry_done.emit(entry.id, translation)
+                self._since_checkpoint += 1
+                if self._since_checkpoint >= self.CHECKPOINT_INTERVAL:
+                    self._since_checkpoint = 0
+                    self.checkpoint.emit()
             except Exception as e:
                 self.error.emit(entry.id, str(e))
 
@@ -62,6 +71,7 @@ class TranslationEngine(QObject):
     entry_done = pyqtSignal(str, str)
     finished = pyqtSignal()
     error = pyqtSignal(str, str)
+    checkpoint = pyqtSignal()
 
     def __init__(self, client: OllamaClient, parent=None):
         super().__init__(parent)
@@ -93,6 +103,7 @@ class TranslationEngine(QObject):
         self._worker.progress.connect(self.progress.emit)
         self._worker.entry_done.connect(self.entry_done.emit)
         self._worker.error.connect(self.error.emit)
+        self._worker.checkpoint.connect(self.checkpoint.emit)
         self._worker.finished.connect(self._on_finished)
 
         self._thread.start()
@@ -102,6 +113,7 @@ class TranslationEngine(QObject):
         return self.client.translate(
             text=entry.original,
             context=entry.context,
+            field=entry.field,
         )
 
     def cancel(self):

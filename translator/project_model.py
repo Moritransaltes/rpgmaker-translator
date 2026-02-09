@@ -2,6 +2,7 @@
 
 import json
 import os
+from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
@@ -42,20 +43,31 @@ class TranslationProject:
     def untranslated_count(self) -> int:
         return sum(1 for e in self.entries if e.status == "untranslated")
 
+    def _build_index(self):
+        """Build internal lookup dicts from the entries list."""
+        self._by_file = defaultdict(list)
+        self._by_id = {}
+        for e in self.entries:
+            self._by_file[e.file].append(e)
+            self._by_id[e.id] = e
+
     def get_entries_for_file(self, filename: str) -> list:
         """Return entries belonging to a specific file."""
-        return [e for e in self.entries if e.file == filename]
+        if not hasattr(self, "_by_file"):
+            self._build_index()
+        return self._by_file.get(filename, [])
 
     def get_files(self) -> list:
         """Return sorted unique filenames."""
-        return sorted(set(e.file for e in self.entries))
+        if not hasattr(self, "_by_file"):
+            self._build_index()
+        return sorted(self._by_file.keys())
 
     def get_entry_by_id(self, entry_id: str) -> Optional[TranslationEntry]:
         """Find an entry by its unique ID."""
-        for e in self.entries:
-            if e.id == entry_id:
-                return e
-        return None
+        if not hasattr(self, "_by_id"):
+            self._build_index()
+        return self._by_id.get(entry_id)
 
     def search(self, query: str) -> list:
         """Search entries by original or translation text."""
@@ -83,6 +95,7 @@ class TranslationProject:
         project.entries = [TranslationEntry(**e) for e in data.get("entries", [])]
         project.glossary = data.get("glossary", {})
         project.actor_genders = data.get("actor_genders", {})
+        project._build_index()
         return project
 
     def stats_for_file(self, filename: str) -> tuple:
