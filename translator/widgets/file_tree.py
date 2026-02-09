@@ -105,14 +105,26 @@ class FileTreeWidget(QTreeWidget):
         """Update progress counts without rebuilding the tree."""
         self._update_item_stats(self.invisibleRootItem(), project)
 
-    def _update_item_stats(self, item, project: TranslationProject):
-        """Recursively update stat labels."""
+    def _update_item_stats(self, item, project: TranslationProject) -> tuple:
+        """Recursively update stat labels. Returns (translated, total) sum for children."""
+        cat_translated = 0
+        cat_total = 0
         for i in range(item.childCount()):
             child = item.child(i)
             filename = child.data(0, Qt.ItemDataRole.UserRole)
             if filename == "__ALL__":
                 child.setText(1, f"{project.translated_count}/{project.total}")
+                self._update_item_stats(child, project)
             elif filename:
                 translated, total = project.stats_for_file(filename)
                 child.setText(1, f"{translated}/{total}")
-            self._update_item_stats(child, project)
+                cat_translated += translated
+                cat_total += total
+                self._update_item_stats(child, project)
+            else:
+                # Category node — recurse and sum up children
+                sub_t, sub_total = self._update_item_stats(child, project)
+                child.setText(1, f"{sub_t}/{sub_total}")
+                cat_translated += sub_t
+                cat_total += sub_total
+        return cat_translated, cat_total

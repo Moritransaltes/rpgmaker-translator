@@ -94,7 +94,9 @@ class TranslationProject:
         project = cls(project_path=data.get("project_path", ""))
         project.entries = [TranslationEntry(**e) for e in data.get("entries", [])]
         project.glossary = data.get("glossary", {})
-        project.actor_genders = data.get("actor_genders", {})
+        # JSON converts int keys to strings — convert back to int
+        raw_genders = data.get("actor_genders", {})
+        project.actor_genders = {int(k): v for k, v in raw_genders.items()}
         project._build_index()
         return project
 

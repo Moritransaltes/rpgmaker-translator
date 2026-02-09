@@ -150,9 +150,12 @@ class SettingsDialog(QDialog):
 
     def _load_current(self):
         """Populate fields from current client settings."""
+        # Save originals so we can restore on cancel
+        self._orig_url = self.client.base_url
+        self._orig_model = self.client.model
         self.url_edit.setText(self.client.base_url)
         self.model_combo.setCurrentText(self.client.model)
-        self.prompt_edit.setPlainText(SYSTEM_PROMPT)
+        self.prompt_edit.setPlainText(self.client.system_prompt)
         self.context_spin.setValue(self.parser.context_size if self.parser else 3)
         self.dark_mode_check.setChecked(self.dark_mode)
         self._load_glossary()
@@ -221,10 +224,17 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Connection Failed",
                                 "Cannot reach Ollama. Make sure it's running:\n  ollama serve")
 
+    def reject(self):
+        """Revert any URL/model changes made during the dialog."""
+        self.client.base_url = self._orig_url
+        self.client.model = self._orig_model
+        super().reject()
+
     def _save(self):
         """Apply settings and close."""
         self.client.base_url = self.url_edit.text().strip() or "http://localhost:11434"
         self.client.model = self.model_combo.currentText().strip()
+        self.client.system_prompt = self.prompt_edit.toPlainText().strip() or SYSTEM_PROMPT
         self.client.glossary = self._get_glossary()
         if self.parser:
             self.parser.context_size = self.context_spin.value()

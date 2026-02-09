@@ -68,6 +68,7 @@ class OllamaClient:
     def __init__(self, base_url: str = "http://localhost:11434", model: str = "qwen2.5:14b"):
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.system_prompt = SYSTEM_PROMPT  # Customizable system prompt
         self.actor_context = ""  # Character reference for pronoun inference
         self.glossary = {}       # JP term -> EN translation forced mappings
 
@@ -76,7 +77,7 @@ class OllamaClient:
         try:
             r = requests.get(f"{self.base_url}/api/tags", timeout=5)
             return r.status_code == 200
-        except requests.ConnectionError:
+        except (requests.RequestException, ValueError, OSError):
             return False
 
     def list_models(self) -> list:
@@ -86,7 +87,7 @@ class OllamaClient:
             r.raise_for_status()
             data = r.json()
             return [m["name"] for m in data.get("models", [])]
-        except (requests.RequestException, KeyError):
+        except (requests.RequestException, KeyError, ValueError, OSError):
             return []
 
     def translate_name(self, text: str, hint: str = "") -> str:
@@ -231,7 +232,7 @@ class OllamaClient:
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": user_msg},
             ],
             "stream": False,
@@ -310,7 +311,7 @@ class OllamaClient:
                     json={
                         "model": self.model,
                         "messages": [
-                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "system", "content": self.system_prompt},
                             {"role": "user", "content": user_msg},
                         ],
                         "stream": False,
@@ -336,7 +337,7 @@ class OllamaClient:
                         json={
                             "model": self.model,
                             "messages": [
-                                {"role": "system", "content": SYSTEM_PROMPT},
+                                {"role": "system", "content": self.system_prompt},
                                 {"role": "user", "content": user_msg},
                             ],
                             "stream": False,

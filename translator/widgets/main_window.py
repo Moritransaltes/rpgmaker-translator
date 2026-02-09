@@ -694,9 +694,16 @@ class MainWindow(QMainWindow):
 
         try:
             import shutil
-            # Remove current data dir and replace with backup
-            shutil.rmtree(data_dir)
-            shutil.copytree(backup_dir, data_dir)
+            # Atomic swap: rename current → temp, copy backup → data, delete temp
+            temp_dir = data_dir + "_restoring"
+            os.rename(data_dir, temp_dir)
+            try:
+                shutil.copytree(backup_dir, data_dir)
+            except Exception:
+                # Copy failed — restore the original data dir
+                os.rename(temp_dir, data_dir)
+                raise
+            shutil.rmtree(temp_dir)
             QMessageBox.information(
                 self, "Restore Complete",
                 "Original Japanese files have been restored.\n"

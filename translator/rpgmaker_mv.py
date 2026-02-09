@@ -575,8 +575,8 @@ class RPGMakerMVParser:
         original_lines = entry.original.split("\n")
         translation_lines = entry.translation.split("\n")
 
-        # Pad or trim translation to match original line count for dialogue
-        if entry.field == "dialog":
+        # Pad or trim translation to match original line count for dialogue/scroll
+        if entry.field in ("dialog", "scroll_text"):
             while len(translation_lines) < len(original_lines):
                 translation_lines.append("")
             translation_lines = translation_lines[:len(original_lines)]
