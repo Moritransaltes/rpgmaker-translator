@@ -307,6 +307,9 @@ EXPRESSIONS = {
     "助けて": "Help me",
     "気持ちいい": "It feels good",
     "いやらしい": "Naughty",
+    "メスガキ": "bratty girl",
+    "クソガキ": "brat",
+    "ガキ": "brat",
 }
 
 # ── All categories with labels ──────────────────────────────────
