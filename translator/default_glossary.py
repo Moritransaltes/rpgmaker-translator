@@ -215,6 +215,10 @@ GAMBLING = {
     "山札": "deck",
     "切り札": "trump card",
     "ジョーカー": "joker",
+    "ババ抜き": "Old Maid",
+    "神経衰弱": "Concentration",
+    "大富豪": "President",
+    "七並べ": "Sevens",
     # Poker hands
     "ロイヤルストレートフラッシュ": "royal flush",
     "ストレートフラッシュ": "straight flush",
