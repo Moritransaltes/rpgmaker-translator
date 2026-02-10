@@ -46,6 +46,33 @@ def _has_japanese(text: str) -> bool:
     return bool(JP_REGEX.search(text))
 
 
+# Patterns that indicate a plugin param is NOT display text
+_PLUGIN_TAG_RE = re.compile(r'^<[^>]+>$')  # <選択肢ヘルプ> — plugin tag
+_ASSET_ID_RE = re.compile(r'^[^\s]*_[^\s]*$')  # 立ち絵_通常 — asset filename (no spaces, has _)
+_FILE_PATH_RE = re.compile(r'^[a-zA-Z][\w]*[/\\]')  # img/pictures/foo — file path (starts with ASCII dir)
+
+
+def _is_plugin_display_text(text: str) -> bool:
+    """Check if a plugin parameter value is likely display text (not a tag/ID/path).
+
+    Returns False for plugin tags, asset filenames, and file paths that would
+    break the game if translated.
+    """
+    stripped = text.strip()
+    if not _has_japanese(stripped):
+        return False
+    # Plugin command tags: <選択肢ヘルプ>
+    if _PLUGIN_TAG_RE.match(stripped):
+        return False
+    # Asset identifiers: 立ち絵_通常 (no spaces + underscore = filename)
+    if _ASSET_ID_RE.match(stripped):
+        return False
+    # File paths: img/pictures/立ち絵
+    if _FILE_PATH_RE.search(stripped):
+        return False
+    return True
+
+
 # Gender detection keywords
 _FEMALE_HINTS = re.compile(
     r'女|姫|嬢|娘|母|姉|妹|妻|彼女|お姉|おかあ|少女|王女|巫女|メイド|'
@@ -851,8 +878,8 @@ class RPGMakerMVParser:
             except (json.JSONDecodeError, ValueError):
                 pass  # Not valid JSON — treat as plain string
 
-        # Plain string — check if it has Japanese
-        if _has_japanese(value):
+        # Plain string — check if it's translatable display text
+        if _is_plugin_display_text(value):
             entries.append(TranslationEntry(
                 id=id_prefix,
                 file="plugins.js",
@@ -872,7 +899,7 @@ class RPGMakerMVParser:
                     return
                 except (json.JSONDecodeError, ValueError):
                     pass
-            if _has_japanese(obj):
+            if _is_plugin_display_text(obj):
                 entries.append(TranslationEntry(
                     id=id_prefix,
                     file="plugins.js",
