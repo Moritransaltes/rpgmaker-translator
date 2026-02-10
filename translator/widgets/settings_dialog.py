@@ -17,11 +17,12 @@ from ..default_glossary import CATEGORIES as DEFAULT_GLOSSARY_CATEGORIES
 class SettingsDialog(QDialog):
     """Dialog for configuring Ollama URL, model, prompt, and glossary."""
 
-    def __init__(self, client: OllamaClient, parent=None, parser: RPGMakerMVParser = None, dark_mode: bool = True):
+    def __init__(self, client: OllamaClient, parent=None, parser: RPGMakerMVParser = None, dark_mode: bool = True, plugin_analyzer=None):
         super().__init__(parent)
         self.client = client
         self.parser = parser
         self.dark_mode = dark_mode
+        self.plugin_analyzer = plugin_analyzer
         self.setWindowTitle("Settings")
         self.setMinimumSize(600, 500)
         self._build_ui()
@@ -90,6 +91,16 @@ class SettingsDialog(QDialog):
             "Higher = better coherence but slower and uses more VRAM."
         )
         opts_form.addRow("Context window size:", self.context_spin)
+
+        self.wordwrap_spin = QSpinBox()
+        self.wordwrap_spin.setRange(0, 200)
+        self.wordwrap_spin.setSpecialValueText("Auto-detect")
+        self.wordwrap_spin.setToolTip(
+            "Characters per line for word wrapping.\n"
+            "0 = auto-detect from game plugins (default).\n"
+            "Set manually if auto-detection gives wrong results."
+        )
+        opts_form.addRow("Word wrap chars/line:", self.wordwrap_spin)
 
         conn_layout.addWidget(opts_group)
 
@@ -173,6 +184,11 @@ class SettingsDialog(QDialog):
         self.model_combo.setCurrentText(self.client.model)
         self.prompt_edit.setPlainText(self.client.system_prompt)
         self.context_spin.setValue(self.parser.context_size if self.parser else 3)
+        # Word wrap: 0 = auto-detect, >0 = manual override
+        if self.plugin_analyzer and getattr(self.plugin_analyzer, '_manual_chars_per_line', 0):
+            self.wordwrap_spin.setValue(self.plugin_analyzer._manual_chars_per_line)
+        else:
+            self.wordwrap_spin.setValue(0)
         self.dark_mode_check.setChecked(self.dark_mode)
         self._load_glossary()
         self._refresh_models()
@@ -296,6 +312,12 @@ class SettingsDialog(QDialog):
         self.client.glossary = self._get_glossary()
         if self.parser:
             self.parser.context_size = self.context_spin.value()
+        # Word wrap override
+        if self.plugin_analyzer:
+            manual = self.wordwrap_spin.value()
+            self.plugin_analyzer._manual_chars_per_line = manual
+            if manual > 0:
+                self.plugin_analyzer.chars_per_line = manual
         self.dark_mode = self.dark_mode_check.isChecked()
         self.accept()
 

@@ -100,6 +100,56 @@ class TranslationProject:
         project._build_index()
         return project
 
+    def import_translations(self, old_project: "TranslationProject") -> dict:
+        """Import translations from an older version of the same project.
+
+        Matching strategy:
+        1. Exact ID match — same entry position in the game files
+        2. Original text match — catches entries that moved location
+
+        Only imports entries that have a translation in the old project
+        and are currently untranslated in this project.
+
+        Returns:
+            Dict with stats: {"by_id": int, "by_text": int, "skipped": int, "new": int}
+        """
+        if not hasattr(self, "_by_id"):
+            self._build_index()
+
+        old_by_id = {}
+        old_by_text = defaultdict(list)
+        for e in old_project.entries:
+            if e.translation and e.status in ("translated", "reviewed"):
+                old_by_id[e.id] = e
+                old_by_text[e.original].append(e)
+
+        stats = {"by_id": 0, "by_text": 0, "skipped": 0, "new": 0}
+
+        for entry in self.entries:
+            if entry.status != "untranslated":
+                stats["skipped"] += 1
+                continue
+
+            # Strategy 1: exact ID match
+            old = old_by_id.get(entry.id)
+            if old and old.original == entry.original:
+                entry.translation = old.translation
+                entry.status = old.status
+                stats["by_id"] += 1
+                continue
+
+            # Strategy 2: same original text (first match)
+            candidates = old_by_text.get(entry.original, [])
+            if candidates:
+                entry.translation = candidates[0].translation
+                entry.status = candidates[0].status
+                stats["by_text"] += 1
+                continue
+
+            stats["new"] += 1
+
+        return stats
+
     def stats_for_file(self, filename: str) -> tuple:
         """Return (translated_count, total_count) for a file."""
         file_entries = self.get_entries_for_file(filename)

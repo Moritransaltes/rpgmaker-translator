@@ -204,6 +204,14 @@ class MainWindow(QMainWindow):
         self.rename_action.setEnabled(False)
         project_menu.addAction(self.rename_action)
 
+        self.import_action = QAction("Import Translations...", self)
+        self.import_action.setToolTip(
+            "Import translations from an older version's save state"
+        )
+        self.import_action.triggered.connect(self._import_translations)
+        self.import_action.setEnabled(False)
+        project_menu.addAction(self.import_action)
+
         # ── Translate menu ────────────────────────────────────────
         translate_menu = menubar.addMenu("Translate")
 
@@ -390,6 +398,7 @@ class MainWindow(QMainWindow):
         self.export_action.setEnabled(True)
         self.restore_action.setEnabled(True)
         self.rename_action.setEnabled(True)
+        self.import_action.setEnabled(True)
         self.txt_export_action.setEnabled(True)
         self.wordwrap_action.setEnabled(True)
 
@@ -676,6 +685,7 @@ class MainWindow(QMainWindow):
         self.export_action.setEnabled(bool(self.project.project_path))
         self.restore_action.setEnabled(bool(self.project.project_path))
         self.rename_action.setEnabled(bool(self.project.project_path))
+        self.import_action.setEnabled(True)
         self.txt_export_action.setEnabled(True)
         self.wordwrap_action.setEnabled(True)
 
@@ -685,6 +695,67 @@ class MainWindow(QMainWindow):
         )
         name = os.path.basename(self.project.project_path) if self.project.project_path else "Restored"
         self.setWindowTitle(f"RPG Maker Translator — {name}")
+
+    def _import_translations(self):
+        """Import translations from an older version's save state."""
+        if not self.project:
+            return
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Old Translation State", "", "JSON Files (*.json)"
+        )
+        if not path:
+            return
+
+        try:
+            old_project = TranslationProject.load_state(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to load old state:\n{e}")
+            return
+
+        old_translated = sum(
+            1 for e in old_project.entries
+            if e.status in ("translated", "reviewed")
+        )
+        current_untranslated = self.project.untranslated_count
+
+        reply = QMessageBox.question(
+            self, "Import Translations",
+            f"Old project: {len(old_project.entries)} entries "
+            f"({old_translated} translated)\n"
+            f"Current project: {self.project.total} entries "
+            f"({current_untranslated} untranslated)\n\n"
+            f"Import matching translations into untranslated entries?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        stats = self.project.import_translations(old_project)
+
+        # Also import glossary entries that don't conflict
+        imported_glossary = 0
+        for jp, en in old_project.glossary.items():
+            if jp not in self.project.glossary:
+                self.project.glossary[jp] = en
+                imported_glossary += 1
+        self.client.glossary = self.project.glossary
+
+        # Refresh UI
+        self.trans_table.set_entries(self.project.entries)
+        self.file_tree.load_project(self.project)
+
+        total_imported = stats["by_id"] + stats["by_text"]
+        QMessageBox.information(
+            self, "Import Complete",
+            f"Imported {total_imported} translations:\n"
+            f"  \u2022 {stats['by_id']} matched by exact position\n"
+            f"  \u2022 {stats['by_text']} matched by identical text\n"
+            f"  \u2022 {stats['new']} new entries (need translation)\n"
+            f"  \u2022 {stats['skipped']} already translated (kept)\n"
+            + (f"  \u2022 {imported_glossary} glossary entries imported\n"
+               if imported_glossary else "")
+        )
 
     def _stop_translation(self):
         """Cancel the running batch translation."""
@@ -774,7 +845,7 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self):
         """Open the settings dialog."""
-        dlg = SettingsDialog(self.client, self, parser=self.parser, dark_mode=self._dark_mode)
+        dlg = SettingsDialog(self.client, self, parser=self.parser, dark_mode=self._dark_mode, plugin_analyzer=self.plugin_analyzer)
         if dlg.exec():
             # Sync glossary to project model
             self.project.glossary = self.client.glossary
@@ -1172,6 +1243,20 @@ class MainWindow(QMainWindow):
             )
             if not variants:
                 QMessageBox.warning(self, "No Variants", "Failed to generate any variants.")
+                return
+            if len(variants) == 1:
+                # Only one unique translation — apply it directly
+                reply = QMessageBox.question(
+                    self, "Single Variant",
+                    "The model produced only one unique translation "
+                    "(all attempts gave the same result).\n\n"
+                    "Apply it?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    entry.translation = variants[0]
+                    entry.status = "translated"
+                    self.trans_table.update_entry(entry_id, variants[0])
                 return
             dlg = VariantDialog(entry.original, variants, self)
             if dlg.exec():

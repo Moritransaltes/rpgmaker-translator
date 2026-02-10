@@ -355,8 +355,7 @@ class OllamaClient:
                         result2 = self._restore_codes(result2, code_map)
                     if result2 and result2 not in variants:
                         variants.append(result2)
-                    else:
-                        variants.append(result)  # Add duplicate anyway
+                    # Skip duplicates — caller handles single-variant case
             except requests.RequestException:
                 pass
 
