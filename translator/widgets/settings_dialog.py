@@ -75,6 +75,24 @@ class SettingsDialog(QDialog):
         self.model_hint_label.setWordWrap(True)
         conn_form.addRow("", self.model_hint_label)
 
+        # Vision model (for image translation OCR)
+        vision_row = QHBoxLayout()
+        self.vision_combo = QComboBox()
+        self.vision_combo.setEditable(True)
+        self.vision_combo.setMinimumWidth(250)
+        self.vision_combo.setToolTip(
+            "Vision model for image OCR (e.g. qwen3-vl:8b).\n"
+            "Used by Translate Images to detect Japanese text in game images.\n"
+            "Leave empty to disable image translation."
+        )
+        vision_row.addWidget(self.vision_combo)
+
+        self.vision_refresh_btn = QPushButton("Refresh")
+        self.vision_refresh_btn.clicked.connect(self._refresh_vision_models)
+        vision_row.addWidget(self.vision_refresh_btn)
+
+        conn_form.addRow("Vision Model:", vision_row)
+
         self.status_label = QLabel("")
         conn_form.addRow("", self.status_label)
 
@@ -184,6 +202,11 @@ class SettingsDialog(QDialog):
             "Use this for common eroge/RPG terms, honorifics, and recurring vocabulary."
         ))
 
+        self.gen_search = QLineEdit()
+        self.gen_search.setPlaceholderText("Search glossary (JP or EN)...")
+        self.gen_search.textChanged.connect(self._filter_general_glossary)
+        general_layout.addWidget(self.gen_search)
+
         self.general_table = QTableWidget()
         self.general_table.setColumnCount(2)
         self.general_table.setHorizontalHeaderLabels(["Japanese Term", "English Translation"])
@@ -230,6 +253,11 @@ class SettingsDialog(QDialog):
             "Project-specific term translations (character names, locations, items).\n"
             "These are saved with the project state. Overrides general glossary if both define a term."
         ))
+
+        self.proj_search = QLineEdit()
+        self.proj_search.setPlaceholderText("Search glossary (JP or EN)...")
+        self.proj_search.textChanged.connect(self._filter_project_glossary)
+        glossary_layout.addWidget(self.proj_search)
 
         self.glossary_table = QTableWidget()
         self.glossary_table.setColumnCount(2)
@@ -297,9 +325,12 @@ class SettingsDialog(QDialog):
         else:
             self.wordwrap_spin.setValue(0)
         self.dark_mode_check.setChecked(self.dark_mode)
+        # Vision model (stored on main window, passed via client attribute)
+        self.vision_combo.setCurrentText(getattr(self.client, "vision_model", "") or "")
         self._load_general_glossary()
         self._load_glossary()
         self._refresh_models()
+        self._refresh_vision_models()
 
     def _load_glossary(self):
         """Load project glossary into table."""
@@ -374,6 +405,24 @@ class SettingsDialog(QDialog):
                 glossary[jp] = en
         return glossary
 
+    # ── Glossary search filters ──────────────────────────────────
+
+    def _filter_general_glossary(self, text: str):
+        """Show/hide rows in general glossary based on search text."""
+        q = text.lower()
+        for row in range(self.general_table.rowCount()):
+            jp = (self.general_table.item(row, 0) or QTableWidgetItem("")).text().lower()
+            en = (self.general_table.item(row, 1) or QTableWidgetItem("")).text().lower()
+            self.general_table.setRowHidden(row, bool(q) and q not in jp and q not in en)
+
+    def _filter_project_glossary(self, text: str):
+        """Show/hide rows in project glossary based on search text."""
+        q = text.lower()
+        for row in range(self.glossary_table.rowCount()):
+            jp = (self.glossary_table.item(row, 0) or QTableWidgetItem("")).text().lower()
+            en = (self.glossary_table.item(row, 1) or QTableWidgetItem("")).text().lower()
+            self.glossary_table.setRowHidden(row, bool(q) and q not in jp and q not in en)
+
     # ── Default glossary loading (into general table) ─────────────
 
     def _load_default_category(self, category: str):
@@ -424,6 +473,22 @@ class SettingsDialog(QDialog):
             if jp and en:
                 glossary[jp] = en
         return glossary
+
+    def _refresh_vision_models(self):
+        """Fetch available vision models from Ollama."""
+        self.client.base_url = self.url_edit.text().strip() or "http://localhost:11434"
+        models = self.client.list_vision_models()
+        current = self.vision_combo.currentText()
+        self.vision_combo.blockSignals(True)
+        self.vision_combo.clear()
+        if models:
+            for m in sorted(models):
+                self.vision_combo.addItem(m)
+            if current in models:
+                self.vision_combo.setCurrentText(current)
+        else:
+            self.vision_combo.setCurrentText(current)
+        self.vision_combo.blockSignals(False)
 
     def _refresh_models(self):
         """Fetch available models from Ollama."""
@@ -532,6 +597,8 @@ class SettingsDialog(QDialog):
         self.client.model = self.model_combo.currentText().strip()
         self.client.system_prompt = self.prompt_edit.toPlainText().strip() or SYSTEM_PROMPT
         self.client.target_language = self.lang_combo.currentData() or "English"
+        # Vision model
+        self.client.vision_model = self.vision_combo.currentText().strip()
         # Store glossaries as results — main window handles the merge
         self.general_glossary = self._get_general_glossary()
         self.project_glossary = self._get_glossary()

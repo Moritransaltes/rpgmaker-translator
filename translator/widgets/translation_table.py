@@ -9,12 +9,12 @@ import re
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableView,
     QLineEdit, QComboBox, QLabel, QMenu, QAbstractItemView, QHeaderView,
-    QInputDialog, QTextEdit, QSplitter, QGroupBox, QCheckBox,
+    QInputDialog, QTextEdit, QSplitter, QGroupBox, QCheckBox, QPushButton,
 )
 from PyQt6.QtCore import (
     pyqtSignal, Qt, QTimer, QAbstractTableModel, QModelIndex,
 )
-from PyQt6.QtGui import QColor, QAction, QTextCursor
+from PyQt6.QtGui import QColor, QAction, QTextCursor, QShortcut, QKeySequence
 
 from ..project_model import TranslationEntry
 
@@ -244,6 +244,52 @@ class TranslationTable(QWidget):
         filter_row.addWidget(self.jp_check)
 
         layout.addLayout(filter_row)
+
+        # ── Find & Replace bar (hidden by default, Ctrl+H to toggle) ─
+        self._replace_bar = QWidget()
+        replace_row = QHBoxLayout(self._replace_bar)
+        replace_row.setContentsMargins(0, 0, 0, 0)
+
+        replace_row.addWidget(QLabel("Find:"))
+        self._find_edit = QLineEdit()
+        self._find_edit.setPlaceholderText("Text to find in translations...")
+        self._find_edit.returnPressed.connect(self._replace_next)
+        replace_row.addWidget(self._find_edit)
+
+        replace_row.addWidget(QLabel("Replace:"))
+        self._replace_edit = QLineEdit()
+        self._replace_edit.setPlaceholderText("Replace with...")
+        self._replace_edit.returnPressed.connect(self._replace_next)
+        replace_row.addWidget(self._replace_edit)
+
+        self._replace_one_btn = QPushButton("Replace")
+        self._replace_one_btn.setToolTip("Replace in current match and advance to next")
+        self._replace_one_btn.clicked.connect(self._replace_current_and_next)
+        replace_row.addWidget(self._replace_one_btn)
+
+        self._replace_all_btn = QPushButton("Replace All")
+        self._replace_all_btn.setToolTip("Replace all occurrences in all translations")
+        self._replace_all_btn.clicked.connect(self._replace_all)
+        replace_row.addWidget(self._replace_all_btn)
+
+        self._replace_status = QLabel("")
+        replace_row.addWidget(self._replace_status)
+
+        close_btn = QPushButton("\u00d7")  # ×
+        close_btn.setFixedWidth(24)
+        close_btn.setToolTip("Close Find & Replace")
+        close_btn.clicked.connect(self._hide_replace_bar)
+        replace_row.addWidget(close_btn)
+
+        self._replace_bar.hide()
+        layout.addWidget(self._replace_bar)
+
+        # Ctrl+H shortcut
+        shortcut = QShortcut(QKeySequence("Ctrl+H"), self)
+        shortcut.activated.connect(self.show_replace_bar)
+
+        # Track position for one-by-one replacement
+        self._replace_index = 0
 
         # ── Vertical splitter: table on top, editor on bottom ─────
         vsplit = QSplitter(Qt.Orientation.Vertical)
@@ -713,6 +759,113 @@ class TranslationTable(QWidget):
         cursor.movePosition(QTextCursor.MoveOperation.Start)
         cursor.insertText("".join(missing_codes))
         self.trans_editor.setTextCursor(cursor)
+
+    # ── Find & Replace ───────────────────────────────────────────
+
+    def show_replace_bar(self):
+        """Show the Find & Replace bar and focus the find field."""
+        self._replace_bar.show()
+        self._find_edit.setFocus()
+        self._find_edit.selectAll()
+
+    def _hide_replace_bar(self):
+        """Hide the Find & Replace bar."""
+        self._replace_bar.hide()
+        self._replace_status.setText("")
+        self._replace_index = 0
+
+    def _replace_all(self):
+        """Replace all occurrences in all translation entries."""
+        find = self._find_edit.text()
+        replace = self._replace_edit.text()
+        if not find:
+            return
+
+        entries_changed = 0
+        total_occurrences = 0
+        for entry in self._all_entries:
+            if not entry.translation or find not in entry.translation:
+                continue
+            count = entry.translation.count(find)
+            entry.translation = entry.translation.replace(find, replace)
+            total_occurrences += count
+            entries_changed += 1
+
+        if entries_changed:
+            self._apply_filter()
+            self.status_changed.emit()
+            # Update editor panel if currently selected row was affected
+            if 0 <= self._selected_row < len(self._visible_entries):
+                entry = self._visible_entries[self._selected_row]
+                self.trans_editor.blockSignals(True)
+                self.trans_editor.setPlainText(entry.translation)
+                self.trans_editor.blockSignals(False)
+
+        self._replace_status.setText(
+            f"Replaced {total_occurrences} in {entries_changed} entries"
+            if entries_changed else "No matches found"
+        )
+
+    def _replace_next(self):
+        """Find and select the next entry containing the search text."""
+        find = self._find_edit.text()
+        if not find:
+            return
+
+        # Search from current position forward through all entries
+        n = len(self._all_entries)
+        for offset in range(n):
+            idx = (self._replace_index + offset) % n
+            entry = self._all_entries[idx]
+            if entry.translation and find in entry.translation:
+                self._replace_index = idx
+                self._select_entry_by_id(entry.id)
+                self._replace_status.setText(
+                    f"Match {idx + 1} of {n} entries"
+                )
+                return
+
+        self._replace_status.setText("No matches found")
+
+    def _replace_current_and_next(self):
+        """Replace in the current match and advance to next."""
+        find = self._find_edit.text()
+        replace = self._replace_edit.text()
+        if not find:
+            return
+
+        # Replace in current entry if it matches
+        if self._replace_index < len(self._all_entries):
+            entry = self._all_entries[self._replace_index]
+            if entry.translation and find in entry.translation:
+                entry.translation = entry.translation.replace(find, replace, 1)
+                # Update table display
+                for row, ve in enumerate(self._visible_entries):
+                    if ve.id == entry.id:
+                        self._model.refresh_row(row)
+                        if row == self._selected_row:
+                            self.trans_editor.blockSignals(True)
+                            self.trans_editor.setPlainText(entry.translation)
+                            self.trans_editor.blockSignals(False)
+                        break
+                self.status_changed.emit()
+
+        # Advance to next match
+        self._replace_index += 1
+        self._replace_next()
+
+    def _select_entry_by_id(self, entry_id: str):
+        """Select and scroll to an entry by ID in the visible table."""
+        # Temporarily clear file filter to show all entries
+        self._entries = self._all_entries
+        self._apply_filter()
+
+        for row, entry in enumerate(self._visible_entries):
+            if entry.id == entry_id:
+                index = self._model.index(row, 0)
+                self.table.setCurrentIndex(index)
+                self.table.scrollTo(index)
+                return
 
     def _update_stats(self):
         """Update the stats label."""

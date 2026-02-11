@@ -9,7 +9,7 @@ from collections import Counter
 from PyQt6.QtWidgets import (
     QMainWindow, QSplitter, QToolBar, QStatusBar, QProgressBar,
     QFileDialog, QMessageBox, QLabel, QWidget, QVBoxLayout, QApplication,
-    QProgressDialog, QMenu, QInputDialog,
+    QProgressDialog, QMenu, QInputDialog, QDialog, QTabWidget,
 )
 from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QAction, QPalette, QColor
@@ -123,6 +123,7 @@ from .translation_table import TranslationTable
 from .settings_dialog import SettingsDialog
 from .actor_gender_dialog import ActorGenderDialog
 from .variant_dialog import VariantDialog
+from .image_panel import ImagePanel
 
 
 class MainWindow(QMainWindow):
@@ -168,6 +169,7 @@ class MainWindow(QMainWindow):
         self._batch_done_count = 0
         self._last_save_path = ""
         self._general_glossary = {}  # persists across all projects
+        self.client.vision_model = ""  # vision model for image OCR
 
         # Restore persistent settings before building UI
         self._load_settings()
@@ -193,19 +195,23 @@ class MainWindow(QMainWindow):
     # ── UI Setup ───────────────────────────────────────────────────
 
     def _build_ui(self):
-        """Build the main layout with splitter."""
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        """Build the main layout with tabs: Text Translation | Image Translation."""
+        self.tabs = QTabWidget()
 
-        # Left: file tree
+        # Tab 1: Text Translation (existing layout)
+        text_tab = QSplitter(Qt.Orientation.Horizontal)
         self.file_tree = FileTreeWidget()
-        splitter.addWidget(self.file_tree)
-
-        # Right: translation table
+        text_tab.addWidget(self.file_tree)
         self.trans_table = TranslationTable()
-        splitter.addWidget(self.trans_table)
+        text_tab.addWidget(self.trans_table)
+        text_tab.setSizes([250, 950])
+        self.tabs.addTab(text_tab, "Text Translation")
 
-        splitter.setSizes([250, 950])
-        self.setCentralWidget(splitter)
+        # Tab 2: Image Translation
+        self.image_panel = ImagePanel()
+        self.tabs.addTab(self.image_panel, "Image Translation")
+
+        self.setCentralWidget(self.tabs)
 
     def _build_menubar(self):
         """Build the menu bar with organized menus."""
@@ -322,6 +328,26 @@ class MainWindow(QMainWindow):
         self.apply_glossary_action.triggered.connect(self._apply_glossary)
         self.apply_glossary_action.setEnabled(False)
         translate_menu.addAction(self.apply_glossary_action)
+
+        translate_menu.addSeparator()
+
+        self.find_replace_action = QAction("Find && Replace...", self)
+        self.find_replace_action.setShortcut("Ctrl+H")
+        self.find_replace_action.setToolTip("Find and replace text in translations")
+        self.find_replace_action.triggered.connect(self.trans_table.show_replace_bar)
+        self.find_replace_action.setEnabled(False)
+        translate_menu.addAction(self.find_replace_action)
+
+        translate_menu.addSeparator()
+
+        self.translate_images_action = QAction("Translate Images...", self)
+        self.translate_images_action.setShortcut("Ctrl+I")
+        self.translate_images_action.setToolTip(
+            "OCR Japanese text from game images, translate, and render English overlays"
+        )
+        self.translate_images_action.triggered.connect(self._translate_images)
+        self.translate_images_action.setEnabled(False)
+        translate_menu.addAction(self.translate_images_action)
 
         # ── Game menu ─────────────────────────────────────────────
         game_menu = menubar.addMenu("Game")
@@ -537,6 +563,12 @@ class MainWindow(QMainWindow):
         self.fix_codes_action.setEnabled(True)
         self.polish_action.setEnabled(True)
         self.apply_glossary_action.setEnabled(True)
+        self.find_replace_action.setEnabled(True)
+        self.translate_images_action.setEnabled(True)
+
+        # Initialize image panel if vision model is set
+        if getattr(self.client, "vision_model", ""):
+            self.image_panel.set_project(path, self.client)
 
         plugin_info = ""
         if self.plugin_analyzer.detected_plugins:
@@ -879,6 +911,12 @@ class MainWindow(QMainWindow):
         self.fix_codes_action.setEnabled(True)
         self.polish_action.setEnabled(True)
         self.apply_glossary_action.setEnabled(True)
+        self.find_replace_action.setEnabled(True)
+        self.translate_images_action.setEnabled(True)
+
+        # Initialize image panel if vision model is set
+        if self.project.project_path and getattr(self.client, "vision_model", ""):
+            self.image_panel.set_project(self.project.project_path, self.client)
 
         self.statusbar.showMessage(
             f"Loaded state: {self.project.total} entries "
@@ -1210,6 +1248,8 @@ class MainWindow(QMainWindow):
             self.engine.batch_size = cfg["batch_size"]
         if "max_history" in cfg:
             self.engine.max_history = cfg["max_history"]
+        if "vision_model" in cfg:
+            self.client.vision_model = cfg["vision_model"]
 
     def _save_settings(self):
         """Persist current settings to _settings.json."""
@@ -1225,6 +1265,7 @@ class MainWindow(QMainWindow):
             "wordwrap_override": getattr(self.plugin_analyzer, "_manual_chars_per_line", 0),
             "general_glossary": self._general_glossary,
             "target_language": self.client.target_language,
+            "vision_model": getattr(self.client, "vision_model", ""),
         }
         try:
             with open(self._SETTINGS_FILE, "w", encoding="utf-8") as f:
@@ -2150,7 +2191,8 @@ class MainWindow(QMainWindow):
             thread.quit()
 
         def on_thread_finished():
-            thread.deleteLater()
+            self._correction_thread = None
+            self._correction_worker = None
 
         worker.done.connect(on_done)
         worker.failed.connect(on_failed)
@@ -2217,10 +2259,14 @@ class MainWindow(QMainWindow):
             )
             thread.quit()
 
+        def on_polish_thread_finished():
+            self._polish_thread = None
+            self._polish_worker = None
+
         worker.entry_done.connect(on_entry)
         worker.finished.connect(on_finished)
         thread.started.connect(worker.run)
-        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(on_polish_thread_finished)
         thread.start()
 
         self._polish_thread = thread
@@ -2308,22 +2354,46 @@ class MainWindow(QMainWindow):
             self.statusbar.showMessage(f"Variant generation failed: {err}", 5000)
             thread.quit()
 
-        def on_thread_finished():
-            thread.deleteLater()
+        def on_variant_thread_finished():
+            self._variant_thread = None
+            self._variant_worker = None
 
         worker.done.connect(on_done)
         worker.failed.connect(on_failed)
         thread.started.connect(worker.run)
-        thread.finished.connect(on_thread_finished)
+        thread.finished.connect(on_variant_thread_finished)
         thread.start()
 
         self._variant_thread = thread
         self._variant_worker = worker
 
+    # ── Image Translation ─────────────────────────────────────────
+
+    def _translate_images(self):
+        """Switch to Image Translation tab and initialize it."""
+        if not self.project.project_path:
+            QMessageBox.warning(self, "Error", "Open a project first.")
+            return
+
+        vision_model = getattr(self.client, "vision_model", "")
+        if not vision_model:
+            QMessageBox.warning(
+                self, "No Vision Model",
+                "Set a vision model in Settings first.\n\n"
+                "Recommended: qwen3-vl:8b\n"
+                "Install with: ollama pull qwen3-vl:8b",
+            )
+            return
+
+        self.image_panel.set_project(self.project.project_path, self.client)
+        self.tabs.setCurrentWidget(self.image_panel)
+
     # ── Window close cleanup ──────────────────────────────────────
 
     def closeEvent(self, event):
         """Clean up background threads and managed Ollama on window close."""
+        # Stop image translation worker if running
+        self.image_panel.stop_worker()
         # Stop batch translation if running
         self.engine.cancel()
         for thread in self.engine._threads:
@@ -2331,10 +2401,10 @@ class MainWindow(QMainWindow):
                 thread.quit()
                 thread.wait(3000)
 
-        # Stop correction/variant threads if running
-        for attr in ("_correction_thread", "_variant_thread"):
+        # Stop correction/polish/variant threads if running
+        for attr in ("_correction_thread", "_polish_thread", "_variant_thread"):
             thread = getattr(self, attr, None)
-            if thread and thread.isRunning():
+            if thread is not None:
                 thread.quit()
                 thread.wait(3000)
 

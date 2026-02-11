@@ -431,6 +431,16 @@ class OllamaClient:
         except (requests.RequestException, KeyError, ValueError, OSError):
             return []
 
+    def list_vision_models(self) -> list:
+        """Get list of vision-capable models from Ollama.
+
+        Filters installed models by known vision model keywords.
+        """
+        _VISION_KEYWORDS = ("vl", "vision", "llava", "minicpm-v", "bakllava")
+        all_models = self.list_models()
+        return [m for m in all_models
+                if any(kw in m.lower() for kw in _VISION_KEYWORDS)]
+
     def translate_name(self, text: str, hint: str = "") -> str:
         """Translate a short string (name, title, profile) without the full
         placeholder/glossary pipeline.  Returns original on failure.
