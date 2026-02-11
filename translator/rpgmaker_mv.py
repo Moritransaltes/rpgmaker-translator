@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import zipfile
 from collections import deque
 from typing import Optional
 
@@ -292,6 +293,272 @@ class RPGMakerMVParser:
 
         # Export plugin translations (plugins.js is outside data/)
         self._save_plugins(project_dir, entries)
+
+    def export_patch_zip(self, project_dir: str, entries: list,
+                         zip_path: str, game_title: str = ""):
+        """Export translated game files as a ready-to-install zip.
+
+        Zip layout::
+
+            _translation/
+                data/Actors.json
+                data/Map001.json
+                ...
+                js/plugins.js       (if applicable)
+            install.bat             (backs up originals, copies translations)
+            uninstall.bat           (restores originals from backup)
+            README.txt
+
+        End users extract into the game folder and run install.bat.
+        """
+        data_dir = self._find_data_dir(project_dir)
+        if not data_dir:
+            raise FileNotFoundError("Could not find data directory in project")
+
+        # Use backup (original JP) as source, same as save_project
+        backup_dir = data_dir + "_original"
+        source_dir = backup_dir if os.path.isdir(backup_dir) else data_dir
+
+        # Relative path from project root to data dir (e.g. "data" or "www/data")
+        data_rel = os.path.relpath(data_dir, project_dir).replace("\\", "/")
+
+        # Group translated entries by file
+        by_file = {}
+        for e in entries:
+            if e.translation and e.status in ("translated", "reviewed"):
+                by_file.setdefault(e.file, []).append(e)
+
+        # Determine js/ relative path for plugins
+        js_rel = None
+        plugins_path = self._find_plugins_file(project_dir)
+        if plugins_path:
+            js_rel = os.path.relpath(
+                os.path.dirname(plugins_path), project_dir
+            ).replace("\\", "/")  # e.g. "js" or "www/js"
+
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            # Write translated data JSON files into _translation/data/
+            for filename, file_entries in by_file.items():
+                if filename == "plugins.js":
+                    continue
+                source_path = os.path.join(source_dir, filename)
+                if not os.path.exists(source_path):
+                    continue
+                with open(source_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                for entry in file_entries:
+                    self._apply_translation(data, entry)
+                arc_path = f"_translation/{data_rel}/{filename}"
+                zf.writestr(arc_path,
+                            json.dumps(data, ensure_ascii=False, indent=2))
+
+            # Write translated plugins.js into _translation/js/
+            plugin_entries = [
+                e for e in entries
+                if e.file == "plugins.js"
+                and e.translation
+                and e.status in ("translated", "reviewed")
+            ]
+            has_plugins = False
+            if plugin_entries and plugins_path:
+                plugins_backup = os.path.join(
+                    os.path.dirname(plugins_path),
+                    os.path.basename(plugins_path).replace(
+                        "plugins.", "plugins_original."),
+                )
+                ps = plugins_backup if os.path.exists(plugins_backup) else plugins_path
+                try:
+                    plugins = self._load_plugins_js(ps)
+                    plugin_by_name = {}
+                    for p in plugins:
+                        if isinstance(p, dict) and p.get("name"):
+                            plugin_by_name[p["name"]] = p
+                    for entry in plugin_entries:
+                        parts = entry.id.split("/")
+                        if len(parts) < 3:
+                            continue
+                        plugin = plugin_by_name.get(parts[1])
+                        if not plugin:
+                            continue
+                        params = plugin.get("parameters", {})
+                        if parts[2] not in params:
+                            continue
+                        if len(parts) <= 3:
+                            params[parts[2]] = entry.translation
+                        else:
+                            try:
+                                parsed = json.loads(params[parts[2]])
+                                self._set_nested_value(
+                                    parsed, parts[3:],
+                                    entry.original, entry.translation)
+                                params[parts[2]] = json.dumps(
+                                    parsed, ensure_ascii=False)
+                            except (json.JSONDecodeError, ValueError):
+                                continue
+                    js_content = "var $plugins =\n" + json.dumps(
+                        plugins, ensure_ascii=False, indent=2) + ";\n"
+                    zf.writestr(f"_translation/{js_rel}/plugins.js", js_content)
+                    has_plugins = True
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            # Count files
+            data_files = [f for f in by_file if f != "plugins.js"]
+            total_entries = sum(len(v) for v in by_file.values())
+
+            # install.bat
+            zf.writestr("install.bat", self._build_install_bat(
+                data_rel, js_rel, data_files, has_plugins, game_title))
+
+            # uninstall.bat
+            zf.writestr("uninstall.bat", self._build_uninstall_bat(
+                data_rel, js_rel, has_plugins, game_title))
+
+            # README.txt
+            readme = (
+                f"English Translation — {game_title or 'RPG Maker Game'}\n"
+                f"{'=' * 50}\n\n"
+                f"Files: {len(data_files)} data file(s)"
+                f"{' + plugins.js' if has_plugins else ''}\n"
+                f"Entries: {total_entries} translated\n\n"
+                "HOW TO INSTALL:\n"
+                "1. Extract this zip into the game folder\n"
+                "   (the folder containing Game.exe)\n"
+                "2. Run install.bat\n"
+                "3. Play the game!\n\n"
+                "TO REVERT TO JAPANESE:\n"
+                "  Run uninstall.bat\n"
+            )
+            zf.writestr("README.txt", readme)
+
+    @staticmethod
+    def _build_install_bat(data_rel: str, js_rel: str,
+                           data_files: list, has_plugins: bool,
+                           game_title: str) -> str:
+        """Generate install.bat: back up originals, copy translations from _translation/."""
+        dr = data_rel.replace("/", "\\")           # e.g. "data" or "www\\data"
+        tr = f"_translation\\{dr}"                  # e.g. "_translation\\data"
+        n = len(data_files)
+        lines = [
+            "@echo off",
+            "chcp 65001 >nul 2>&1",
+            f"title Install English Translation",
+            "echo.",
+            f"echo  {game_title or 'RPG Maker Game'} — English Translation",
+            "echo.",
+            f"echo  This will install the English translation ({n} files).",
+            "echo  Original files will be backed up automatically.",
+            "echo.",
+            "pause",
+            "",
+            # Sanity check
+            f'if not exist "{dr}" (',
+            f'    echo ERROR: "{dr}\\" folder not found.',
+            "    echo Make sure you extracted this zip into the game folder",
+            "    echo  ^(the folder containing Game.exe^).",
+            "    pause",
+            "    exit /b 1",
+            ")",
+            f'if not exist "{tr}" (',
+            "    echo ERROR: _translation folder not found.",
+            "    echo Make sure you extracted the FULL zip, not just install.bat.",
+            "    pause",
+            "    exit /b 1",
+            ")",
+            "",
+            # Step 1: Back up originals
+            f'echo [Step 1] Backing up original files...',
+            f'if not exist "{dr}_original\\" (',
+            f'    xcopy "{dr}" "{dr}_original\\" /E /I /Q /Y >nul',
+            "    echo   Created backup: %s_original\\" % dr,
+            ") else (",
+            f'    echo   Backup already exists ({dr}_original\\), skipping.',
+            ")",
+            "",
+        ]
+
+        if has_plugins and js_rel:
+            jr = js_rel.replace("/", "\\")
+            lines += [
+                f'if exist "{jr}\\plugins.js" if not exist "{jr}\\plugins_original.js" (',
+                f'    copy "{jr}\\plugins.js" "{jr}\\plugins_original.js" >nul',
+                f"    echo   Backed up {jr}\\plugins.js",
+                ")",
+                "",
+            ]
+
+        # Step 2: Copy translations
+        lines += [
+            f'echo [Step 2] Installing translated files...',
+            f'xcopy "{tr}" "{dr}" /E /I /Q /Y >nul',
+            f"echo   Copied {n} file(s) to {dr}\\",
+        ]
+
+        if has_plugins and js_rel:
+            jr = js_rel.replace("/", "\\")
+            tjr = f"_translation\\{jr}"
+            lines += [
+                f'if exist "{tjr}\\plugins.js" (',
+                f'    copy /Y "{tjr}\\plugins.js" "{jr}\\plugins.js" >nul',
+                f"    echo   Installed translated plugins.js",
+                ")",
+            ]
+
+        lines += [
+            "",
+            "echo.",
+            f"echo  Installation complete!",
+            "echo  To restore Japanese originals, run uninstall.bat",
+            "echo.",
+            "pause",
+        ]
+        return "\r\n".join(lines) + "\r\n"
+
+    @staticmethod
+    def _build_uninstall_bat(data_rel: str, js_rel: str,
+                             has_plugins: bool, game_title: str) -> str:
+        """Generate uninstall.bat: restore originals from backup."""
+        dr = data_rel.replace("/", "\\")
+        lines = [
+            "@echo off",
+            "chcp 65001 >nul 2>&1",
+            f"title Restore Japanese — {game_title or 'RPG Maker Game'}",
+            "echo.",
+            f"echo  {game_title or 'RPG Maker Game'} — Restore Japanese",
+            "echo.",
+            "echo  This will restore the original Japanese files.",
+            "echo.",
+            "pause",
+            "",
+            f'if not exist "{dr}_original\\" (',
+            f"    echo ERROR: No backup found ({dr}_original\\).",
+            "    echo Cannot restore — the backup was never created.",
+            "    pause",
+            "    exit /b 1",
+            ")",
+            "",
+            f'echo Restoring {dr}\\ from {dr}_original\\...',
+            f'xcopy "{dr}_original" "{dr}\\" /E /I /Q /Y >nul',
+            "echo   Data files restored.",
+        ]
+
+        if has_plugins and js_rel:
+            jr = js_rel.replace("/", "\\")
+            lines += [
+                f'if exist "{jr}\\plugins_original.js" (',
+                f'    copy /Y "{jr}\\plugins_original.js" "{jr}\\plugins.js" >nul',
+                "    echo   plugins.js restored.",
+                ")",
+            ]
+
+        lines += [
+            "",
+            "echo.",
+            "echo  Done! Original Japanese files restored.",
+            "echo.",
+            "pause",
+        ]
+        return "\r\n".join(lines) + "\r\n"
 
     @staticmethod
     def _backup_data_dir(data_dir: str):

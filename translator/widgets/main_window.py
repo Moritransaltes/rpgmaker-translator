@@ -361,6 +361,16 @@ class MainWindow(QMainWindow):
         self.apply_patch_action.setEnabled(False)
         game_menu.addAction(self.apply_patch_action)
 
+        game_menu.addSeparator()
+
+        self.export_zip_action = QAction("Export Patch Zip (for distribution)...", self)
+        self.export_zip_action.setToolTip(
+            "Export translated game files + install.bat as a zip — end users just extract and run"
+        )
+        self.export_zip_action.triggered.connect(self._export_patch_zip)
+        self.export_zip_action.setEnabled(False)
+        game_menu.addAction(self.export_zip_action)
+
         # ── Settings (top-level action) ───────────────────────────
         self.settings_action = QAction("Settings", self)
         self.settings_action.triggered.connect(self._open_settings)
@@ -521,6 +531,7 @@ class MainWindow(QMainWindow):
         self.txt_export_action.setEnabled(True)
         self.create_patch_action.setEnabled(True)
         self.apply_patch_action.setEnabled(True)
+        self.export_zip_action.setEnabled(True)
         self.wordwrap_action.setEnabled(True)
         self.fix_codes_action.setEnabled(True)
         self.polish_action.setEnabled(True)
@@ -838,6 +849,7 @@ class MainWindow(QMainWindow):
         self.txt_export_action.setEnabled(True)
         self.create_patch_action.setEnabled(True)
         self.apply_patch_action.setEnabled(True)
+        self.export_zip_action.setEnabled(True)
         self.wordwrap_action.setEnabled(True)
         self.fix_codes_action.setEnabled(True)
         self.polish_action.setEnabled(True)
@@ -1067,6 +1079,12 @@ class MainWindow(QMainWindow):
     def _on_checkpoint(self):
         """Auto-save during batch translation (every 25 entries)."""
         self._autosave()
+        # Run translation memory to fill duplicates from newly translated entries
+        tm_count = self._run_translation_memory()
+        if tm_count:
+            self.statusbar.showMessage(
+                f"Translation memory: filled {tm_count} duplicate(s)", 3000
+            )
 
     def _on_status_changed(self):
         """Handle status change from manual edits."""
@@ -1375,21 +1393,13 @@ class MainWindow(QMainWindow):
 
         self.engine.translate_batch(ordered)
 
-    def _start_batch(self, mode: str = "all"):
-        """Shared batch translation logic.
+    def _run_translation_memory(self) -> int:
+        """Fill untranslated entries that match already-translated text.
 
-        Args:
-            mode: "all" = everything, "db" = DB/System only,
-                  "dialogue" = non-DB only (maps, events, plugins).
+        Uses self._current_batch_mode to respect db/dialogue filtering.
+        Returns the number of entries filled.
         """
-        if not self.client.is_available():
-            QMessageBox.warning(
-                self, "Ollama Not Available",
-                "Cannot connect to Ollama. Make sure it's running:\n  ollama serve"
-            )
-            return
-
-        # Translation memory: auto-fill exact duplicates from already-translated entries
+        mode = getattr(self, "_current_batch_mode", "all")
         translated_map = {}
         for e in self.project.entries:
             if e.status in ("translated", "reviewed") and e.translation:
@@ -1410,6 +1420,28 @@ class MainWindow(QMainWindow):
 
         if tm_count:
             self.file_tree.refresh_stats(self.project)
+
+        return tm_count
+
+    def _start_batch(self, mode: str = "all"):
+        """Shared batch translation logic.
+
+        Args:
+            mode: "all" = everything, "db" = DB/System only,
+                  "dialogue" = non-DB only (maps, events, plugins).
+        """
+        if not self.client.is_available():
+            QMessageBox.warning(
+                self, "Ollama Not Available",
+                "Cannot connect to Ollama. Make sure it's running:\n  ollama serve"
+            )
+            return
+
+        self._current_batch_mode = mode
+
+        # Translation memory: auto-fill exact duplicates from already-translated entries
+        tm_count = self._run_translation_memory()
+        if tm_count:
             self.statusbar.showMessage(
                 f"Translation memory: filled {tm_count} duplicate(s)", 3000
             )
@@ -1827,6 +1859,59 @@ class MainWindow(QMainWindow):
             + (f"  \u2022 {imported_genders} actor genders imported\n"
                if imported_genders else "")
         )
+
+    def _export_patch_zip(self):
+        """Export translated game files + install.bat as a distributable zip."""
+        if not self.project.entries or not self.project.project_path:
+            return
+
+        translated = [e for e in self.project.entries
+                      if e.status in ("translated", "reviewed")]
+        if not translated:
+            QMessageBox.information(
+                self, "Nothing to Export",
+                "No translated entries to export."
+            )
+            return
+
+        # Get game title
+        game_title = ""
+        for e in self.project.entries:
+            if e.field == "gameTitle" and e.translation:
+                game_title = e.translation
+                break
+        if not game_title:
+            for e in self.project.entries:
+                if e.field == "gameTitle":
+                    game_title = e.original
+                    break
+
+        # Default filename
+        safe_title = "".join(
+            c for c in game_title if c.isalnum() or c in " _-"
+        )[:50].strip()
+        default_name = (f"{safe_title} English.zip"
+                        if safe_title else "english_translation.zip")
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Patch Zip", default_name, "Zip Files (*.zip)"
+        )
+        if not path:
+            return
+
+        try:
+            self.parser.export_patch_zip(
+                self.project.project_path, self.project.entries,
+                path, game_title=game_title)
+            n_files = len(set(e.file for e in translated))
+            QMessageBox.information(
+                self, "Patch Zip Created",
+                f"Saved to:\n{path}\n\n"
+                f"{len(translated)} translated entries across {n_files} file(s).\n\n"
+                f"End users: extract into the game folder and run install.bat."
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to create patch zip:\n{e}")
 
     # ── Re-translate with diff ─────────────────────────────────────
 
