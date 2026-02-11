@@ -60,6 +60,62 @@ _JAPANESE_RE = re.compile(
 )
 
 
+def _to_pig_latin(text: str) -> str:
+    """Convert English text to Pig Latin, preserving «CODEn» placeholders.
+
+    Rules:
+    - Vowel-start words: word + "way"  (apple → appleway)
+    - Consonant-start words: move leading consonant cluster + "ay"  (string → ingstray)
+    - Preserve capitalization pattern
+    - Skip control code placeholders, numbers, punctuation-only tokens
+    """
+    _VOWELS = set("aeiouAEIOU")
+
+    def _pig_word(word: str) -> str:
+        if not word:
+            return word
+        # Skip «CODEn» placeholders
+        if "\u00ab" in word or "\u00bb" in word:
+            return word
+        # Extract leading/trailing non-alpha characters (punctuation, quotes, etc.)
+        i = 0
+        while i < len(word) and not word[i].isalpha():
+            i += 1
+        j = len(word) - 1
+        while j >= i and not word[j].isalpha():
+            j -= 1
+        if i > j:
+            return word  # No alphabetic core (numbers, punctuation, etc.)
+        prefix = word[:i]
+        suffix = word[j + 1:]
+        core = word[i:j + 1]
+        # Detect capitalization
+        all_upper = core.isupper() and len(core) > 1
+        cap_first = core[0].isupper()
+        low = core.lower()
+        # Apply Pig Latin rule
+        if low[0] in _VOWELS:
+            result = low + "way"
+        else:
+            k = 0
+            while k < len(low) and low[k] not in _VOWELS:
+                k += 1
+            result = low[k:] + low[:k] + "ay"
+        # Restore capitalization
+        if all_upper:
+            result = result.upper()
+        elif cap_first:
+            result = result[0].upper() + result[1:]
+        return prefix + result + suffix
+
+    # Process line by line (preserving \n), then word by word
+    lines = text.split("\n")
+    return "\n".join(
+        " ".join(_pig_word(w) for w in line.split(" "))
+        for line in lines
+    )
+
+
 SYSTEM_PROMPT = """You are a professional Japanese to English translator specializing in RPG/video game dialogue, including adult (18+) content.
 
 Rules:
@@ -151,6 +207,7 @@ TARGET_LANGUAGES = [
     ("Romanian",              "\u2605\u2605\u2606\u2606\u2606", "Fair — supported EU language, limited JP data. 14b+ strongly recommended"),
     ("Hungarian",             "\u2605\u2605\u2606\u2606\u2606", "Fair — supported EU language, limited JP data. 14b+ strongly recommended"),
     ("Tagalog",               "\u2605\u2605\u2606\u2606\u2606", "Fair — Austronesian support, limited JP data. 14b+ strongly recommended"),
+    ("Pig Latin",             "\u2605\u2605\u2605\u2605\u2605", "Erfectpay — anslatesTray JP\u2192English enThay igPay atinLay. Qapla'!"),
 ]
 
 
@@ -159,14 +216,14 @@ def build_system_prompt(target_language: str = "English") -> str:
 
     Uses the English prompt as template and swaps "English" for the target.
     """
-    if target_language == "English":
+    if target_language in ("English", "Pig Latin"):
         return SYSTEM_PROMPT
     return SYSTEM_PROMPT.replace("English", target_language)
 
 
 def _build_name_prompt(target_language: str = "English") -> str:
     """Build the short name-translation prompt for a given target language."""
-    if target_language == "English":
+    if target_language in ("English", "Pig Latin"):
         return _NAME_SYSTEM_PROMPT
     return _NAME_SYSTEM_PROMPT.replace("English", target_language)
 
@@ -361,6 +418,8 @@ class OllamaClient:
                 options={"temperature": 0, "seed": 42, "num_predict": 256, "num_ctx": 4096},
             )
             result = self._strip_thinking(data.get("message", {}).get("content", "").strip())
+            if result and self.target_language == "Pig Latin":
+                result = _to_pig_latin(result)
             return result if result else text
         except requests.RequestException:
             return text
@@ -658,6 +717,11 @@ class OllamaClient:
                 except requests.RequestException:
                     pass  # Keep original result on retry failure
 
+            # Pig Latin post-processing (applied before code restoration
+            # so «CODEn» placeholders are trivially skipped)
+            if self.target_language == "Pig Latin":
+                result = _to_pig_latin(result)
+
             # Post-process: restore control codes from placeholders
             if code_map:
                 result = self._restore_codes(result, code_map)
@@ -874,6 +938,8 @@ class OllamaClient:
                 if orig:
                     retry_entries.append((key, orig, translation))
                     continue
+            if self.target_language == "Pig Latin":
+                translation = _to_pig_latin(translation)
             if code_maps.get(key):
                 translation = self._restore_codes(translation, code_maps[key])
             results[key] = translation
@@ -1039,6 +1105,8 @@ class OllamaClient:
                 )
                 result = self._strip_thinking(data.get("message", {}).get("content", "").strip())
                 result = self._strip_notes(result)
+                if self.target_language == "Pig Latin":
+                    result = _to_pig_latin(result)
                 if code_map:
                     result = self._restore_codes(result, code_map)
                 # Only add if it's actually different
@@ -1061,6 +1129,8 @@ class OllamaClient:
                     )
                     result2 = self._strip_thinking(data2.get("message", {}).get("content", "").strip())
                     result2 = self._strip_notes(result2)
+                    if self.target_language == "Pig Latin":
+                        result2 = _to_pig_latin(result2)
                     if code_map:
                         result2 = self._restore_codes(result2, code_map)
                     if result2 and result2 not in variants:

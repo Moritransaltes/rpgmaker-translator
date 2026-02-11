@@ -265,6 +265,7 @@ Translate from Japanese into **24 target languages**. Quality ratings reflect JP
 | **4 stars** | Chinese (Traditional), Korean, Spanish, Portuguese, French, German | Works well even on 8b models |
 | **3 stars** | Russian, Italian, Polish, Dutch, Turkish, Indonesian, Vietnamese, Thai, Malay | Better with 14b+ |
 | **2 stars** | Arabic, Hindi, Ukrainian, Czech, Romanian, Hungarian, Tagalog | 14b+ strongly recommended |
+| **0 stars** | Klingon | Requires custom fine-tuned model. Qapla'! |
 
 Select your target language in **Settings**. Each language shows its star rating and model recommendation in the tooltip.
 
