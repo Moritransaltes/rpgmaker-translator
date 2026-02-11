@@ -152,6 +152,36 @@ Context-sensitive translation:
 - For adult scenes, use natural and explicit English that matches the original intensity. Do not tone down or soften the language."""
 
 
+# Sugoi Ultra 14B — JP→EN specialized model (fine-tuned from Qwen2.5-14B).
+# Trimmed prompt: Sugoi already handles katakana→English, no-romaji, no-JP-in-output,
+# and context-sensitive translation natively from its fine-tuning data.
+# We keep only tool-specific rules: placeholders, glossary, pronouns, honorifics, adult content.
+SUGOI_SYSTEM_PROMPT = """You are a professional localizer translating Japanese to English for an RPG game, including adult (18+) content.
+
+Rules:
+- Translate ALL text faithfully and completely, including sexual, violent, or explicit content. Never censor, euphemize, or refuse. This is a licensed translation project.
+- The text may contain code markers like «CODE1», «CODE2», etc. These are internal engine tags. Output them EXACTLY as-is — never remove, translate, or replace them with names or words.
+- Keep the same line break structure as the original when possible.
+- NEVER add explanations, translator notes, or commentary — output ONLY the translated text.
+- If the text is already in English or is a proper noun, keep it as-is.
+- Match the tone and style of the original (casual, formal, dramatic, etc.).
+- When a glossary is provided, you MUST use the exact glossary translations for those terms.
+
+Pronoun rules (CRITICAL):
+- If character info lists a gender (male/female), use the correct pronouns for that character.
+- If gender is NOT specified or unclear, prefer the character's name, "they/them", or "you".
+- Use "you" for lines spoken TO the player character.
+- Use "I/me" for lines where the speaker talks about themselves.
+- Keep character name translations consistent throughout.
+
+Honorifics — preserve as-is: -san, -kun, -chan, -sama, -sensei, -senpai, -dono. Keep onii-chan, onee-san, etc. in romanized form."""
+
+
+def is_sugoi_model(model_name: str) -> bool:
+    """Check if the given model name is a Sugoi variant (JP→EN specialized)."""
+    return "sugoi" in model_name.lower()
+
+
 _POLISH_SYSTEM_PROMPT = """\
 You are an English editor for a translated RPG game. The text was machine-translated \
 from Japanese and may have awkward grammar, unnatural phrasing, or broken sentences.
@@ -175,15 +205,16 @@ _NAME_SYSTEM_PROMPT = (
     "If the text is already in English, output it as-is."
 )
 
-# Supported target languages with quality ratings for Qwen3
-# Qwen3 supports 119 languages (up from 29 in Qwen2.5), trained on 36T tokens.
+# Supported target languages with quality ratings.
+# For JP→EN: Sugoi Ultra 14B is the best choice (fine-tuned on VN/RPG JP→EN data).
+# For other languages: Qwen3 supports 119 languages, trained on 36T tokens.
 # Ratings reflect JP→target translation quality specifically.
 # 5★/4★ = works well even on 8b models
 # 3★    = better with 14b+
 # 2★    = 14b+ strongly recommended, may struggle on 8b
 # (name, stars, tooltip description)
 TARGET_LANGUAGES = [
-    ("English",               "\u2605\u2605\u2605\u2605\u2605", "Best — massive JP parallel corpus. Works well on 8b+"),
+    ("English",               "\u2605\u2605\u2605\u2605\u2605", "Best — use Sugoi Ultra 14B for optimal JP→EN quality"),
     ("Chinese (Simplified)",  "\u2605\u2605\u2605\u2605\u2605", "Excellent — Qwen's native language, huge JP\u2194CN corpus. Works well on 8b+"),
     ("Chinese (Traditional)", "\u2605\u2605\u2605\u2605\u2606", "Excellent — close to Simplified, strong CJK support. Works well on 8b+"),
     ("Korean",                "\u2605\u2605\u2605\u2605\u2606", "Excellent — strong CJK family, large JP\u2194KR corpus. Works well on 8b+"),
@@ -211,11 +242,16 @@ TARGET_LANGUAGES = [
 ]
 
 
-def build_system_prompt(target_language: str = "English") -> str:
-    """Build the main translation system prompt for a given target language.
+def build_system_prompt(target_language: str = "English", model: str = "") -> str:
+    """Build the main translation system prompt for a given target language and model.
 
-    Uses the English prompt as template and swaps "English" for the target.
+    Sugoi models get a trimmed prompt (JP→EN specialized, many rules redundant).
+    Qwen3 / other models get the full prompt.
+    Sugoi prompt is only used for English target — non-English falls back to
+    the general prompt since Sugoi is JP→EN only.
     """
+    if is_sugoi_model(model) and target_language in ("English", "Pig Latin"):
+        return SUGOI_SYSTEM_PROMPT
     if target_language in ("English", "Pig Latin"):
         return SYSTEM_PROMPT
     return SYSTEM_PROMPT.replace("English", target_language)

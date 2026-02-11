@@ -32,52 +32,65 @@ A desktop tool for translating RPG Maker MV/MZ games using a local LLM — no cl
 - **NVIDIA GPU** recommended (AMD GPUs partially supported — see below)
 - **Ollama** installed and running
 
-## Recommended Models by GPU
+## Recommended Models
 
-Pick the best model for your GPU's VRAM. Larger models produce better translations but require more memory.
+### Sugoi Ultra 14B — Best for JP→EN (Recommended)
+
+**Sugoi Ultra 14B** is a JP→EN specialized translation model fine-tuned from Qwen2.5-14B on visual novel, RPG, and manga parallel data. It produces significantly better JP→EN translations than general-purpose models — nearly 2x the BLEU score of previous versions.
+
+| GPU (VRAM) | Quantization | VRAM Usage | Quality |
+|---|---|---|---|
+| **8GB** (RTX 3060/4060) | Q2_K | ~5.8GB | Good |
+| **10-12GB** (RTX 3080/4070/4070 Ti) | Q4_K_M | ~9.0GB | Great |
+| **16GB** (RTX 4080/5070 Ti/5080) | Q8_0 | ~15.7GB | Excellent |
+| **24GB+** (RTX 4090/5090) | F16 | ~29.5GB | Best |
+
+**Install via HuggingFace:**
+```bash
+ollama run hf.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF
+```
+
+This downloads the Q4_K_M quantization by default (~9GB). For other quantizations, specify the variant:
+```bash
+ollama run hf.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF:Q8_0
+```
+
+**Why Sugoi?** Fine-tuned specifically on JP→EN parallel translation data including VNs, RPGs, and manga. Handles RPGM bracket-heavy text, honorifics, and adult content natively. The tool auto-detects Sugoi and uses an optimized prompt.
+
+### Qwen3 — Multi-Language (24 Target Languages)
+
+If you need to translate into languages other than English, use Qwen3. It supports 119 languages with strong JP comprehension.
 
 | GPU (VRAM) | Recommended Model | Command | Quality | Speed |
 |---|---|---|---|---|
-| **RTX 3060 / 4060** (8GB) | Qwen3:8b | `ollama pull qwen3:8b` | Good | ~35 tok/s |
-| **RTX 3070 / 4060 Ti** (8GB) | Qwen3:8b | `ollama pull qwen3:8b` | Good | ~45 tok/s |
-| **RTX 3080 / 4070** (10-12GB) | Qwen3:14b | `ollama pull qwen3:14b` | Great | ~25 tok/s |
-| **RTX 3090 / 4070 Ti** (12GB) | Qwen3:14b | `ollama pull qwen3:14b` | Great | ~30 tok/s |
-| **RTX 4080** (16GB) | Qwen3:14b-q8_0 | `ollama pull qwen3:14b-q8_0` | Great+ | ~35 tok/s |
-| **RTX 4090** (24GB) | Qwen3:30b-a3b | `ollama pull qwen3:30b-a3b` | Excellent | ~30 tok/s |
-| **RTX 5070** (12GB) | Qwen3:14b | `ollama pull qwen3:14b` | Great | ~40 tok/s |
-| **RTX 5070 Ti** (16GB) | Qwen3:14b-q8_0 | `ollama pull qwen3:14b-q8_0` | Great+ | ~45 tok/s |
-| **RTX 5080** (16GB) | Qwen3:14b-q8_0 | `ollama pull qwen3:14b-q8_0` | Great+ | ~50 tok/s |
-| **RTX 5090** (32GB) | Qwen3:32b | `ollama pull qwen3:32b` | Best | ~30 tok/s |
-| **2x GPUs / 48GB+** | Qwen3:32b | `ollama pull qwen3:32b` | Best | ~20 tok/s |
-| **CPU only** (no GPU) | Qwen3:4b | `ollama pull qwen3:4b` | Basic | ~5 tok/s |
+| **8GB** (RTX 3060/4060) | Qwen3:8b | `ollama pull qwen3:8b` | Good | ~35 tok/s |
+| **10-12GB** (RTX 3080/4070 Ti) | Qwen3:14b | `ollama pull qwen3:14b` | Great | ~25 tok/s |
+| **16GB** (RTX 4080/5070 Ti) | Qwen3:14b-q8_0 | `ollama pull qwen3:14b-q8_0` | Great+ | ~35 tok/s |
+| **24GB** (RTX 4090) | Qwen3:30b-a3b | `ollama pull qwen3:30b-a3b` | Excellent | ~30 tok/s |
+| **32GB** (RTX 5090) | Qwen3:32b | `ollama pull qwen3:32b` | Best | ~30 tok/s |
+| **CPU only** | Qwen3:4b | `ollama pull qwen3:4b` | Basic | ~5 tok/s |
 
 **Notes:**
 - Speeds are approximate and vary by text length and system config
 - Models use Q4_K_M quantization by default in Ollama (good quality-to-size ratio)
 - If a model barely fits your VRAM, it will work but may be slower due to partial CPU offload
-- You can always try the next size up — if it runs too slowly, switch back in **Settings**
-- The **30b-a3b** model uses Mixture of Experts (MoE) — 30B total params but only 3.3B activated per token, giving excellent quality with fast inference. Needs ~19GB VRAM.
-- GPUs with 6GB (RTX 2060, GTX 1660) can use `qwen3:4b` (~3GB VRAM) but quality drops noticeably for nuanced Japanese
+- The **30b-a3b** model uses Mixture of Experts (MoE) — 30B total params but only 3.3B activated per token
 - **RTX 5000 series** benefits from faster memory bandwidth (GDDR7) — expect ~20-30% speed improvement over equivalent 4000-series VRAM tiers
-- The **RTX 5090** (32GB) can run the full Qwen3:32b dense model entirely in VRAM — the best single-GPU option
-- If you have 64GB+ RAM, you can also try larger models with partial CPU offload
-
-**Why Qwen3?** The Qwen3 model family has the best Japanese language comprehension among open-weight models at every size tier. The new MoE variants (30b-a3b) offer exceptional quality-to-speed ratios. Other models (Llama, Mistral) are weaker at Japanese and produce more translation errors.
 
 ### AMD GPU Support
 
 Ollama supports AMD GPUs via ROCm, but with caveats:
 
-| GPU | VRAM | Recommended Model | OS Support | Notes |
-|-----|------|-------------------|------------|-------|
-| **RX 9070 XT** | 16GB | Qwen3:14b-q8_0 | Linux (ROCm) | RDNA4, new arch — check Ollama ROCm support |
-| **RX 9070** | 12GB | Qwen3:14b | Linux (ROCm) | RDNA4, new arch — check Ollama ROCm support |
-| **RX 7900 XTX** | 24GB | Qwen3:30b-a3b | Linux (ROCm) | Best AMD option, runs MoE model comfortably |
-| **RX 7900 XT** | 20GB | Qwen3:30b-a3b | Linux (ROCm) | Fits MoE (~19GB), tight but workable |
-| **RX 7800 XT** | 16GB | Qwen3:14b-q8_0 | Linux (ROCm) | Higher quality 14B quantization |
-| **RX 7700 XT** | 12GB | Qwen3:14b | Linux (ROCm) | Tight for 14B, similar to 4070 Ti |
-| **RX 7600** | 8GB | Qwen3:8b | Linux (ROCm) | Entry-level, 8B model fits well |
-| **RX 6000 series** | Varies | Qwen3:8b | Linux (ROCm) | RDNA2 supported but slower, use 8B |
+| GPU | VRAM | JP→EN (Sugoi) | Multi-language (Qwen3) | OS Support |
+|-----|------|---------------|------------------------|------------|
+| **RX 9070 XT** | 16GB | Sugoi 14B Q8_0 | Qwen3:14b-q8_0 | Linux (ROCm) |
+| **RX 9070** | 12GB | Sugoi 14B Q4_K_M | Qwen3:14b | Linux (ROCm) |
+| **RX 7900 XTX** | 24GB | Sugoi 14B F16 | Qwen3:30b-a3b | Linux (ROCm) |
+| **RX 7900 XT** | 20GB | Sugoi 14B Q8_0 | Qwen3:30b-a3b | Linux (ROCm) |
+| **RX 7800 XT** | 16GB | Sugoi 14B Q8_0 | Qwen3:14b-q8_0 | Linux (ROCm) |
+| **RX 7700 XT** | 12GB | Sugoi 14B Q4_K_M | Qwen3:14b | Linux (ROCm) |
+| **RX 7600** | 8GB | Sugoi 14B Q2_K | Qwen3:8b | Linux (ROCm) |
+| **RX 6000 series** | Varies | Sugoi 14B Q2_K | Qwen3:8b | Linux (ROCm) |
 
 **Important AMD notes:**
 - **Linux is recommended** — ROCm has full support on Linux. Windows AMD support in Ollama uses a Vulkan fallback which is significantly slower.
@@ -92,8 +105,14 @@ Ollama supports AMD GPUs via ROCm, but with caveats:
 
 Download and install Ollama from: https://ollama.com/download
 
-After installation, open a terminal and pull the model for your GPU (see table above):
+After installation, open a terminal and download the recommended model:
 
+**For JP→EN (recommended):**
+```bash
+ollama run hf.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF
+```
+
+**For multi-language translation:**
 ```bash
 ollama pull qwen3:14b
 ```
@@ -233,7 +252,7 @@ Go to **Translate > Apply Word Wrap** to automatically format translated text to
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Ollama URL | `http://localhost:11434` | Address of the Ollama server |
-| Model | `qwen3:14b` | Which LLM model to use |
+| Model | `qwen3:14b` | Which LLM model to use (Sugoi auto-detected and recommended for JP→EN) |
 | Target Language | English | Translation target (24 languages with quality ratings and model size guidance) |
 | System Prompt | (built-in) | The instruction prompt sent to the LLM |
 | Workers | `2` | Number of parallel translation threads |
@@ -257,7 +276,7 @@ Go to **Translate > Apply Word Wrap** to automatically format translated text to
 
 ## Supported Languages
 
-Translate from Japanese into **24 target languages**. Quality ratings reflect JP→target translation accuracy with Qwen3. Larger models help more for lower-rated languages.
+Translate from Japanese into **24 target languages**. For JP→EN, use Sugoi Ultra 14B for the best quality. For other languages, use Qwen3 — quality ratings below reflect JP→target accuracy with Qwen3.
 
 | Rating | Languages | Model Guidance |
 |--------|-----------|---------------|

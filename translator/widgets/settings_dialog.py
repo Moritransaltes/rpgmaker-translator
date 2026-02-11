@@ -9,7 +9,10 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-from ..ollama_client import OllamaClient, SYSTEM_PROMPT, TARGET_LANGUAGES, build_system_prompt
+from ..ollama_client import (
+    OllamaClient, SYSTEM_PROMPT, SUGOI_SYSTEM_PROMPT, TARGET_LANGUAGES,
+    build_system_prompt, is_sugoi_model,
+)
 from ..rpgmaker_mv import RPGMakerMVParser
 from ..default_glossary import CATEGORIES as DEFAULT_GLOSSARY_CATEGORIES
 
@@ -68,6 +71,10 @@ class SettingsDialog(QDialog):
 
         conn_form.addRow("Model:", model_row)
 
+        self.model_hint_label = QLabel("")
+        self.model_hint_label.setWordWrap(True)
+        conn_form.addRow("", self.model_hint_label)
+
         self.status_label = QLabel("")
         conn_form.addRow("", self.status_label)
 
@@ -77,6 +84,8 @@ class SettingsDialog(QDialog):
             self.lang_combo.setItemData(self.lang_combo.count() - 1, tip, Qt.ItemDataRole.ToolTipRole)
         self.lang_combo.currentIndexChanged.connect(self._on_language_changed)
         conn_form.addRow("Target Language:", self.lang_combo)
+
+        self.model_combo.currentTextChanged.connect(self._on_model_changed)
 
         conn_layout.addWidget(conn_group)
 
@@ -89,7 +98,7 @@ class SettingsDialog(QDialog):
         prompt_layout.addWidget(self.prompt_edit)
 
         reset_btn = QPushButton("Reset to Default")
-        reset_btn.clicked.connect(lambda: self.prompt_edit.setPlainText(SYSTEM_PROMPT))
+        reset_btn.clicked.connect(self._reset_prompt_to_default)
         prompt_layout.addWidget(reset_btn, alignment=Qt.AlignmentFlag.AlignLeft)
 
         conn_layout.addWidget(prompt_group)
@@ -421,9 +430,21 @@ class SettingsDialog(QDialog):
         self.client.base_url = self.url_edit.text().strip() or "http://localhost:11434"
         models = self.client.list_models()
         current = self.model_combo.currentText()
+        self.model_combo.blockSignals(True)
         self.model_combo.clear()
         if models:
-            self.model_combo.addItems(models)
+            # Sort: Sugoi models first (recommended for JP→EN), then alphabetical
+            sugoi = sorted(m for m in models if is_sugoi_model(m))
+            others = sorted(m for m in models if not is_sugoi_model(m))
+            for m in sugoi:
+                self.model_combo.addItem(m)
+                idx = self.model_combo.count() - 1
+                self.model_combo.setItemData(
+                    idx, "Recommended for JP→EN (Sugoi — VN/RPG specialized)",
+                    Qt.ItemDataRole.ToolTipRole,
+                )
+            for m in others:
+                self.model_combo.addItem(m)
             if current in models:
                 self.model_combo.setCurrentText(current)
             self.status_label.setText(f"Found {len(models)} model(s)")
@@ -432,6 +453,9 @@ class SettingsDialog(QDialog):
             self.model_combo.setCurrentText(current)
             self.status_label.setText("Could not fetch models -- is Ollama running?")
             self.status_label.setStyleSheet("color: red;")
+        self.model_combo.blockSignals(False)
+        # Update hint label for current model
+        self._on_model_changed(self.model_combo.currentText())
 
     def _test_connection(self):
         """Test if Ollama is reachable."""
@@ -447,12 +471,54 @@ class SettingsDialog(QDialog):
         new_lang = self.lang_combo.itemData(index)
         if not new_lang:
             return
-        # Only auto-update if the prompt matches the template for the old language
+        # Only auto-update if the prompt matches the template for the old language/model
         old_lang = self._orig_language
+        current_model = self.model_combo.currentText()
         current_prompt = self.prompt_edit.toPlainText().strip()
-        if current_prompt == build_system_prompt(old_lang).strip():
-            self.prompt_edit.setPlainText(build_system_prompt(new_lang))
+        old_prompt = build_system_prompt(old_lang, model=current_model)
+        if current_prompt == old_prompt.strip():
+            self.prompt_edit.setPlainText(build_system_prompt(new_lang, model=current_model))
             self._orig_language = new_lang
+
+    def _on_model_changed(self, model_name: str):
+        """Auto-update system prompt and hint label when model changes."""
+        current_lang = self.lang_combo.currentData() or "English"
+        current_prompt = self.prompt_edit.toPlainText().strip()
+
+        # Update model hint label
+        if is_sugoi_model(model_name):
+            if current_lang in ("English", "Pig Latin"):
+                self.model_hint_label.setText(
+                    "Sugoi detected — optimized JP→EN prompt will be used"
+                )
+                self.model_hint_label.setStyleSheet("color: #a6e3a1;")
+            else:
+                self.model_hint_label.setText(
+                    "Sugoi is JP→EN only — using general prompt for " + current_lang
+                )
+                self.model_hint_label.setStyleSheet("color: #fab387;")
+        else:
+            self.model_hint_label.setText("")
+
+        # Auto-switch prompt if it matches any known template
+        if self._is_known_prompt_template(current_prompt):
+            new_prompt = build_system_prompt(current_lang, model=model_name)
+            self.prompt_edit.setPlainText(new_prompt)
+
+    def _is_known_prompt_template(self, prompt: str) -> bool:
+        """Check if the prompt matches any auto-generated template."""
+        p = prompt.strip()
+        return (
+            p == SYSTEM_PROMPT.strip()
+            or p == SUGOI_SYSTEM_PROMPT.strip()
+            or p == build_system_prompt(self.lang_combo.currentData() or "English").strip()
+        )
+
+    def _reset_prompt_to_default(self):
+        """Reset prompt to the correct default for the current model."""
+        current_model = self.model_combo.currentText()
+        current_lang = self.lang_combo.currentData() or "English"
+        self.prompt_edit.setPlainText(build_system_prompt(current_lang, model=current_model))
 
     def reject(self):
         """Revert any URL/model changes made during the dialog."""
