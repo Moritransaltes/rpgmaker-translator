@@ -30,6 +30,11 @@ _JP_BRACKETS = {
 }
 
 
+# Regex to strip Qwen3 thinking blocks (<think>...</think>) that waste
+# tokens and slow down inference.  These appear when the model's internal
+# chain-of-thought mode is enabled (Qwen3 default).
+_THINK_RE = re.compile(r'<think>.*?</think>\s*', re.DOTALL)
+
 # Regex to strip translator notes/commentary the LLM sometimes appends.
 # Matches common patterns at the end of the output.
 _NOTE_STRIP_RE = re.compile(
@@ -162,6 +167,29 @@ class OllamaClient:
         self.actor_names = {}    # {actor_id(int): "name string"}
         self.glossary = {}       # JP term -> EN translation forced mappings
         self._managed_proc = None  # subprocess.Popen if we started Ollama
+
+    def _chat(self, *, messages: list, stream: bool = False,
+              timeout: int = 120, **kwargs) -> dict:
+        """Send a chat request to Ollama with thinking mode disabled.
+
+        Centralizes all /api/chat calls so global options (like disabling
+        Qwen3 thinking) are applied consistently.  Extra kwargs are merged
+        into the request payload (e.g. ``options``, ``format``).
+        """
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": stream,
+            "think": False,   # Disable Qwen3 chain-of-thought (huge speed win)
+            **kwargs,
+        }
+        r = requests.post(
+            f"{self.base_url}/api/chat",
+            json=payload,
+            timeout=timeout,
+        )
+        r.raise_for_status()
+        return r.json()
 
     def is_available(self) -> bool:
         """Check if Ollama server is reachable."""
@@ -307,26 +335,25 @@ class OllamaClient:
         if hint:
             user_msg = f"Context: this is a {hint} from an RPG game.\nTranslate this:\n{text}"
         try:
-            r = requests.post(
-                f"{self.base_url}/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": _build_name_prompt(self.target_language)},
-                        {"role": "user", "content": user_msg},
-                    ],
-                    "stream": False,
-                    "options": {"temperature": 0, "seed": 42, "num_predict": 256, "num_ctx": 4096},
-                },
+            data = self._chat(
+                messages=[
+                    {"role": "system", "content": _build_name_prompt(self.target_language)},
+                    {"role": "user", "content": user_msg},
+                ],
                 timeout=30,
+                options={"temperature": 0, "seed": 42, "num_predict": 256, "num_ctx": 4096},
             )
-            r.raise_for_status()
-            result = r.json().get("message", {}).get("content", "").strip()
+            result = self._strip_thinking(data.get("message", {}).get("content", "").strip())
             return result if result else text
         except requests.RequestException:
             return text
 
     # ── Placeholder system ──────────────────────────────────────
+
+    @staticmethod
+    def _strip_thinking(text: str) -> str:
+        """Remove Qwen3 <think>...</think> reasoning blocks from output."""
+        return _THINK_RE.sub('', text).strip()
 
     @staticmethod
     def _strip_notes(text: str) -> str:
@@ -559,27 +586,18 @@ class OllamaClient:
         if history:
             num_ctx = min(4096 + len(history) * 256, 8192)
 
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "stream": False,
-            "options": {
-                "temperature": 0,
-                "seed": 42,
-                "num_predict": 1024,
-                "num_ctx": num_ctx,
-            },
-        }
-
         try:
-            r = requests.post(
-                f"{self.base_url}/api/chat",
-                json=payload,
+            data = self._chat(
+                messages=messages,
                 timeout=120,
+                options={
+                    "temperature": 0,
+                    "seed": 42,
+                    "num_predict": 1024,
+                    "num_ctx": num_ctx,
+                },
             )
-            r.raise_for_status()
-            data = r.json()
-            result = data.get("message", {}).get("content", "").strip()
+            result = self._strip_thinking(data.get("message", {}).get("content", "").strip())
 
             # Guard: treat empty LLM output as a failure so we don't
             # silently mark entries as "translated" with blank text.
@@ -606,23 +624,17 @@ class OllamaClient:
                     {"role": "user", "content": retry_msg},
                 ]
                 try:
-                    r2 = requests.post(
-                        f"{self.base_url}/api/chat",
-                        json={
-                            "model": self.model,
-                            "messages": messages_retry,
-                            "stream": False,
-                            "options": {
-                                "temperature": 0,
-                                "seed": 42,
-                                "num_predict": 1024,
-                                "num_ctx": num_ctx,
-                            },
-                        },
+                    data2 = self._chat(
+                        messages=messages_retry,
                         timeout=120,
+                        options={
+                            "temperature": 0,
+                            "seed": 42,
+                            "num_predict": 1024,
+                            "num_ctx": num_ctx,
+                        },
                     )
-                    r2.raise_for_status()
-                    retry_result = r2.json().get("message", {}).get("content", "").strip()
+                    retry_result = self._strip_thinking(data2.get("message", {}).get("content", "").strip())
                     if retry_result:
                         retry_result = self._strip_notes(retry_result)
                         result = retry_result
@@ -658,26 +670,20 @@ class OllamaClient:
         user_msg += f"Polish this:\n{clean_text}"
 
         try:
-            r = requests.post(
-                f"{self.base_url}/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": _POLISH_SYSTEM_PROMPT},
-                        {"role": "user", "content": user_msg},
-                    ],
-                    "stream": False,
-                    "options": {
-                        "temperature": 0,
-                        "seed": 42,
-                        "num_predict": 1024,
-                        "num_ctx": 4096,
-                    },
-                },
+            data = self._chat(
+                messages=[
+                    {"role": "system", "content": _POLISH_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_msg},
+                ],
                 timeout=120,
+                options={
+                    "temperature": 0,
+                    "seed": 42,
+                    "num_predict": 1024,
+                    "num_ctx": 4096,
+                },
             )
-            r.raise_for_status()
-            result = r.json().get("message", {}).get("content", "").strip()
+            result = self._strip_thinking(data.get("message", {}).get("content", "").strip())
             if not result:
                 return text  # Keep original on empty response
 
@@ -816,27 +822,21 @@ class OllamaClient:
         num_predict = min(1024 * len(entries), 8192)
 
         try:
-            r = requests.post(
-                f"{self.base_url}/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": batch_sys},
-                        {"role": "user", "content": user_msg},
-                    ],
-                    "stream": False,
-                    "format": "json",
-                    "options": {
-                        "temperature": 0,
-                        "seed": 42,
-                        "num_predict": num_predict,
-                        "num_ctx": max(4096, 2048 * len(entries)),
-                    },
-                },
+            data = self._chat(
+                messages=[
+                    {"role": "system", "content": batch_sys},
+                    {"role": "user", "content": user_msg},
+                ],
                 timeout=120 + 30 * len(entries),
+                format="json",
+                options={
+                    "temperature": 0,
+                    "seed": 42,
+                    "num_predict": num_predict,
+                    "num_ctx": max(4096, 2048 * len(entries)),
+                },
             )
-            r.raise_for_status()
-            raw = r.json().get("message", {}).get("content", "").strip()
+            raw = self._strip_thinking(data.get("message", {}).get("content", "").strip())
             if not raw:
                 raise ConnectionError("Ollama returned empty response for batch")
         except requests.RequestException as e:
@@ -926,27 +926,21 @@ class OllamaClient:
         num_predict = min(1024 * len(entries), 8192)
 
         try:
-            r = requests.post(
-                f"{self.base_url}/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": batch_sys},
-                        {"role": "user", "content": user_msg},
-                    ],
-                    "stream": False,
-                    "format": "json",
-                    "options": {
-                        "temperature": 0,
-                        "seed": 42,
-                        "num_predict": num_predict,
-                        "num_ctx": max(4096, 2048 * len(entries)),
-                    },
-                },
+            data = self._chat(
+                messages=[
+                    {"role": "system", "content": batch_sys},
+                    {"role": "user", "content": user_msg},
+                ],
                 timeout=120 + 30 * len(entries),
+                format="json",
+                options={
+                    "temperature": 0,
+                    "seed": 42,
+                    "num_predict": num_predict,
+                    "num_ctx": max(4096, 2048 * len(entries)),
+                },
             )
-            r.raise_for_status()
-            raw = r.json().get("message", {}).get("content", "").strip()
+            raw = self._strip_thinking(data.get("message", {}).get("content", "").strip())
             if not raw:
                 raise ConnectionError("Ollama returned empty response for batch")
         except requests.RequestException as e:
@@ -1013,26 +1007,20 @@ class OllamaClient:
                     user_msg += f"REQUIRED glossary — use these EXACT translations:\n{glossary_str}\n\n"
                 user_msg += f"Translate this:\n{clean_text}"
 
-                r = requests.post(
-                    f"{self.base_url}/api/chat",
-                    json={
-                        "model": self.model,
-                        "messages": [
-                            {"role": "system", "content": self.system_prompt},
-                            {"role": "user", "content": user_msg},
-                        ],
-                        "stream": False,
-                        "options": {
-                            "temperature": 0.5,
-                            "seed": seeds[i],
-                            "num_predict": 1024,
-                            "num_ctx": 4096,
-                        },
-                    },
+                data = self._chat(
+                    messages=[
+                        {"role": "system", "content": self.system_prompt},
+                        {"role": "user", "content": user_msg},
+                    ],
                     timeout=120,
+                    options={
+                        "temperature": 0.5,
+                        "seed": seeds[i],
+                        "num_predict": 1024,
+                        "num_ctx": 4096,
+                    },
                 )
-                r.raise_for_status()
-                result = r.json().get("message", {}).get("content", "").strip()
+                result = self._strip_thinking(data.get("message", {}).get("content", "").strip())
                 result = self._strip_notes(result)
                 if code_map:
                     result = self._restore_codes(result, code_map)
@@ -1041,26 +1029,20 @@ class OllamaClient:
                     variants.append(result)
                 elif result:
                     # Duplicate — try again with higher temp
-                    r2 = requests.post(
-                        f"{self.base_url}/api/chat",
-                        json={
-                            "model": self.model,
-                            "messages": [
-                                {"role": "system", "content": self.system_prompt},
-                                {"role": "user", "content": user_msg},
-                            ],
-                            "stream": False,
-                            "options": {
-                                "temperature": 0.8,
-                                "seed": seeds[i] + 100,
-                                "num_predict": 1024,
-                                "num_ctx": 4096,
-                            },
-                        },
+                    data2 = self._chat(
+                        messages=[
+                            {"role": "system", "content": self.system_prompt},
+                            {"role": "user", "content": user_msg},
+                        ],
                         timeout=120,
+                        options={
+                            "temperature": 0.8,
+                            "seed": seeds[i] + 100,
+                            "num_predict": 1024,
+                            "num_ctx": 4096,
+                        },
                     )
-                    r2.raise_for_status()
-                    result2 = r2.json().get("message", {}).get("content", "").strip()
+                    result2 = self._strip_thinking(data2.get("message", {}).get("content", "").strip())
                     result2 = self._strip_notes(result2)
                     if code_map:
                         result2 = self._restore_codes(result2, code_map)
