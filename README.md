@@ -17,40 +17,52 @@ Pick the best model for your GPU's VRAM. Larger models produce better translatio
 
 | GPU (VRAM) | Recommended Model | Command | Quality | Speed |
 |---|---|---|---|---|
-| **RTX 3060 / 4060** (8GB) | Qwen2.5:7b | `ollama pull qwen2.5:7b` | Good | ~35 tok/s |
-| **RTX 3070 / 4060 Ti** (8GB) | Qwen2.5:7b | `ollama pull qwen2.5:7b` | Good | ~45 tok/s |
-| **RTX 3080 / 4070** (10-12GB) | Qwen2.5:14b | `ollama pull qwen2.5:14b` | Great | ~25 tok/s |
-| **RTX 3090 / 4070 Ti** (12GB) | Qwen2.5:14b | `ollama pull qwen2.5:14b` | Great | ~30 tok/s |
-| **RTX 4080** (16GB) | Qwen2.5:14b | `ollama pull qwen2.5:14b` | Great | ~40 tok/s |
-| **RTX 4090** (24GB) | Qwen2.5:32b | `ollama pull qwen2.5:32b` | Excellent | ~30 tok/s |
-| **2x GPUs / 48GB+** | Qwen2.5:72b | `ollama pull qwen2.5:72b` | Best | ~15 tok/s |
-| **CPU only** (no GPU) | Qwen2.5:3b | `ollama pull qwen2.5:3b` | Basic | ~5 tok/s |
+| **RTX 3060 / 4060** (8GB) | Qwen3:8b | `ollama pull qwen3:8b` | Good | ~35 tok/s |
+| **RTX 3070 / 4060 Ti** (8GB) | Qwen3:8b | `ollama pull qwen3:8b` | Good | ~45 tok/s |
+| **RTX 3080 / 4070** (10-12GB) | Qwen3:14b | `ollama pull qwen3:14b` | Great | ~25 tok/s |
+| **RTX 3090 / 4070 Ti** (12GB) | Qwen3:14b | `ollama pull qwen3:14b` | Great | ~30 tok/s |
+| **RTX 4080** (16GB) | Qwen3:14b-q8_0 | `ollama pull qwen3:14b-q8_0` | Great+ | ~35 tok/s |
+| **RTX 4090** (24GB) | Qwen3:30b-a3b | `ollama pull qwen3:30b-a3b` | Excellent | ~30 tok/s |
+| **RTX 5070** (12GB) | Qwen3:14b | `ollama pull qwen3:14b` | Great | ~40 tok/s |
+| **RTX 5070 Ti** (16GB) | Qwen3:14b-q8_0 | `ollama pull qwen3:14b-q8_0` | Great+ | ~45 tok/s |
+| **RTX 5080** (16GB) | Qwen3:14b-q8_0 | `ollama pull qwen3:14b-q8_0` | Great+ | ~50 tok/s |
+| **RTX 5090** (32GB) | Qwen3:32b | `ollama pull qwen3:32b` | Best | ~30 tok/s |
+| **2x GPUs / 48GB+** | Qwen3:32b | `ollama pull qwen3:32b` | Best | ~20 tok/s |
+| **CPU only** (no GPU) | Qwen3:4b | `ollama pull qwen3:4b` | Basic | ~5 tok/s |
 
 **Notes:**
 - Speeds are approximate and vary by text length and system config
 - Models use Q4_K_M quantization by default in Ollama (good quality-to-size ratio)
 - If a model barely fits your VRAM, it will work but may be slower due to partial CPU offload
 - You can always try the next size up — if it runs too slowly, switch back in **Settings**
-- GPUs with 6GB (RTX 2060, GTX 1660) can use `qwen2.5:3b` (~3GB VRAM) but quality drops noticeably for nuanced Japanese
+- The **30b-a3b** model uses Mixture of Experts (MoE) — 30B total params but only 3.3B activated per token, giving excellent quality with fast inference. Needs ~19GB VRAM.
+- GPUs with 6GB (RTX 2060, GTX 1660) can use `qwen3:4b` (~3GB VRAM) but quality drops noticeably for nuanced Japanese
+- **RTX 5000 series** benefits from faster memory bandwidth (GDDR7) — expect ~20-30% speed improvement over equivalent 4000-series VRAM tiers
+- The **RTX 5090** (32GB) can run the full Qwen3:32b dense model entirely in VRAM — the best single-GPU option
+- If you have 64GB+ RAM, you can also try larger models with partial CPU offload
 
-**Why Qwen2.5?** The Qwen2.5 model family has the best Japanese language comprehension among open-weight models at every size tier. Other models (Llama, Mistral) are weaker at Japanese and produce more translation errors.
+**Why Qwen3?** The Qwen3 model family has the best Japanese language comprehension among open-weight models at every size tier. The new MoE variants (30b-a3b) offer exceptional quality-to-speed ratios. Other models (Llama, Mistral) are weaker at Japanese and produce more translation errors.
 
 ### AMD GPU Support
 
 Ollama supports AMD GPUs via ROCm, but with caveats:
 
-| GPU | VRAM | OS Support | Notes |
-|-----|------|------------|-------|
-| **RX 7900 XTX** | 24GB | Linux (ROCm) | Best AMD option, runs 14B+ comfortably |
-| **RX 7900 XT** | 20GB | Linux (ROCm) | Solid for 14B models |
-| **RX 7800 XT** | 16GB | Linux (ROCm) | Good for 14B |
-| **RX 7700 XT** | 12GB | Linux (ROCm) | Tight for 14B, similar to 4070 Ti |
-| **RX 6000 series** | Varies | Linux (ROCm) | RDNA2 supported but slower |
+| GPU | VRAM | Recommended Model | OS Support | Notes |
+|-----|------|-------------------|------------|-------|
+| **RX 9070 XT** | 16GB | Qwen3:14b-q8_0 | Linux (ROCm) | RDNA4, new arch — check Ollama ROCm support |
+| **RX 9070** | 12GB | Qwen3:14b | Linux (ROCm) | RDNA4, new arch — check Ollama ROCm support |
+| **RX 7900 XTX** | 24GB | Qwen3:30b-a3b | Linux (ROCm) | Best AMD option, runs MoE model comfortably |
+| **RX 7900 XT** | 20GB | Qwen3:30b-a3b | Linux (ROCm) | Fits MoE (~19GB), tight but workable |
+| **RX 7800 XT** | 16GB | Qwen3:14b-q8_0 | Linux (ROCm) | Higher quality 14B quantization |
+| **RX 7700 XT** | 12GB | Qwen3:14b | Linux (ROCm) | Tight for 14B, similar to 4070 Ti |
+| **RX 7600** | 8GB | Qwen3:8b | Linux (ROCm) | Entry-level, 8B model fits well |
+| **RX 6000 series** | Varies | Qwen3:8b | Linux (ROCm) | RDNA2 supported but slower, use 8B |
 
 **Important AMD notes:**
 - **Linux is recommended** — ROCm has full support on Linux. Windows AMD support in Ollama uses a Vulkan fallback which is significantly slower.
 - **~30-50% slower** than equivalent NVIDIA GPUs for LLM inference due to less mature software stack.
 - AMD GPUs need more VRAM to match NVIDIA performance — a 12GB AMD card won't perform as well as a 12GB NVIDIA card.
+- **RDNA4 (RX 9070 series)** — Brand new architecture. Ollama ROCm support may lag behind launch; check the [Ollama GitHub](https://github.com/ollama/ollama) for latest compatibility.
 - If you're buying new hardware specifically for local LLM work, NVIDIA is the safer choice.
 
 ## Installation
@@ -62,7 +74,7 @@ Download and install Ollama from: https://ollama.com/download
 After installation, open a terminal and pull the model for your GPU (see table above):
 
 ```bash
-ollama pull qwen2.5:14b
+ollama pull qwen3:14b
 ```
 
 ### 2. Install Python Dependencies
@@ -200,7 +212,7 @@ Go to **Translate > Apply Word Wrap** to automatically format translated text to
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Ollama URL | `http://localhost:11434` | Address of the Ollama server |
-| Model | `qwen2.5:14b` | Which LLM model to use |
+| Model | `qwen3:14b` | Which LLM model to use |
 | Target Language | English | Translation target (supports 12 languages with quality ratings) |
 | System Prompt | (built-in) | The instruction prompt sent to the LLM |
 | Workers | `2` | Number of parallel translation threads |
@@ -230,8 +242,8 @@ Go to **Translate > Apply Word Wrap** to automatically format translated text to
 
 **Translations are slow**
 - Each entry takes 2-10 seconds depending on text length and GPU speed
-- The Qwen2.5:14b model on a 4070 Ti processes roughly 20-30 tokens/second
-- Use a smaller model (`qwen2.5:7b`) for faster but lower-quality translations
+- The Qwen3:14b model on a 4070 Ti processes roughly 20-30 tokens/second
+- Use a smaller model (`qwen3:8b`) for faster but lower-quality translations
 
 **Control codes are missing from translations**
 - The tool automatically preserves control codes (`\N[1]`, `\C[2]`, etc.) using a placeholder system

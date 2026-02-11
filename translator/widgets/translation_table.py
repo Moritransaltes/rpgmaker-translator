@@ -174,6 +174,7 @@ class TranslationTable(QWidget):
     variant_requested = pyqtSignal(str)       # entry_id — request translation variants
     polish_requested = pyqtSignal(list)       # List of entry IDs to polish
     status_changed = pyqtSignal()             # Emitted when any status changes
+    glossary_add = pyqtSignal(str, str, str)  # jp_term, en_term, "project"|"general"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -244,6 +245,8 @@ class TranslationTable(QWidget):
         self.orig_editor.setReadOnly(True)
         self.orig_editor.setAcceptRichText(False)
         self.orig_editor.setPlaceholderText("Select a row to view original text...")
+        self.orig_editor.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.orig_editor.customContextMenuRequested.connect(self._show_orig_context_menu)
         orig_box.addWidget(self.orig_editor)
         editor_layout.addWidget(orig_group)
 
@@ -409,6 +412,16 @@ class TranslationTable(QWidget):
         copy_action.triggered.connect(self._copy_original)
         menu.addAction(copy_action)
 
+        menu.addSeparator()
+
+        add_proj_glossary = QAction("Add to Project Glossary...", self)
+        add_proj_glossary.triggered.connect(lambda: self._add_row_to_glossary("project"))
+        menu.addAction(add_proj_glossary)
+
+        add_gen_glossary = QAction("Add to General Glossary...", self)
+        add_gen_glossary.triggered.connect(lambda: self._add_row_to_glossary("general"))
+        menu.addAction(add_gen_glossary)
+
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
     def _translate_selected(self):
@@ -467,6 +480,33 @@ class TranslationTable(QWidget):
         self._update_stats()
         self.status_changed.emit()
 
+    def _add_row_to_glossary(self, glossary_type: str):
+        """Add selected row's original→translation as a glossary entry."""
+        ids = self.get_selected_entry_ids()
+        if not ids:
+            return
+        # Use the first selected entry
+        entry = None
+        for e in self._visible_entries:
+            if e.id == ids[0]:
+                entry = e
+                break
+        if not entry:
+            return
+        jp_term = entry.original.strip()
+        en_prefill = entry.translation.strip()
+        # Strip control codes from both for cleaner glossary entries
+        jp_term = self._strip_codes(jp_term)
+        en_prefill = self._strip_codes(en_prefill)
+        label = "Project" if glossary_type == "project" else "General"
+        en_term, ok = QInputDialog.getText(
+            self, f"Add to {label} Glossary",
+            f"Japanese: {jp_term}\n\nEnglish translation:",
+            text=en_prefill,
+        )
+        if ok and en_term.strip() and jp_term:
+            self.glossary_add.emit(jp_term, en_term.strip(), glossary_type)
+
     # ── Editor panel handlers ─────────────────────────────────────
 
     def _on_row_selected(self, current: QModelIndex, previous: QModelIndex):
@@ -507,9 +547,20 @@ class TranslationTable(QWidget):
         self.status_changed.emit()
 
     def _show_editor_context_menu(self, pos):
-        """Right-click menu on translation editor — insert codes from original."""
+        """Right-click menu on translation editor — glossary add + insert codes."""
         # Start with the standard text-edit menu (copy, paste, undo, etc.)
         menu = self.trans_editor.createStandardContextMenu()
+
+        # Glossary add from selected EN text
+        selected = self.trans_editor.textCursor().selectedText().strip()
+        if selected:
+            menu.addSeparator()
+            proj_action = QAction(f'Add "{selected}" to Project Glossary...', self)
+            proj_action.triggered.connect(lambda: self._add_to_glossary_from_trans(selected, "project"))
+            menu.addAction(proj_action)
+            gen_action = QAction(f'Add "{selected}" to General Glossary...', self)
+            gen_action.triggered.connect(lambda: self._add_to_glossary_from_trans(selected, "general"))
+            menu.addAction(gen_action)
 
         row = self._selected_row
         if row < 0 or row >= len(self._visible_entries):
@@ -544,6 +595,44 @@ class TranslationTable(QWidget):
             menu.addAction(action)
 
         menu.exec(self.trans_editor.mapToGlobal(pos))
+
+    def _show_orig_context_menu(self, pos):
+        """Right-click menu on original editor — glossary add from JP selection."""
+        menu = self.orig_editor.createStandardContextMenu()
+        selected = self.orig_editor.textCursor().selectedText().strip()
+        if selected:
+            menu.addSeparator()
+            proj_action = QAction(f'Add "{selected}" to Project Glossary...', self)
+            proj_action.triggered.connect(lambda: self._add_to_glossary_from_orig(selected, "project"))
+            menu.addAction(proj_action)
+            gen_action = QAction(f'Add "{selected}" to General Glossary...', self)
+            gen_action.triggered.connect(lambda: self._add_to_glossary_from_orig(selected, "general"))
+            menu.addAction(gen_action)
+        menu.exec(self.orig_editor.mapToGlobal(pos))
+
+    def _add_to_glossary_from_orig(self, jp_term: str, glossary_type: str):
+        """Prompt for EN translation and emit glossary_add signal."""
+        # Pre-fill with selected text from translation editor if any
+        prefill = self.trans_editor.textCursor().selectedText().strip()
+        en_term, ok = QInputDialog.getText(
+            self, f"Add to {'Project' if glossary_type == 'project' else 'General'} Glossary",
+            f"Japanese: {jp_term}\n\nEnglish translation:",
+            text=prefill,
+        )
+        if ok and en_term.strip():
+            self.glossary_add.emit(jp_term, en_term.strip(), glossary_type)
+
+    def _add_to_glossary_from_trans(self, en_term: str, glossary_type: str):
+        """Prompt for JP original and emit glossary_add signal."""
+        # Pre-fill with selected text from original editor if any
+        prefill = self.orig_editor.textCursor().selectedText().strip()
+        jp_term, ok = QInputDialog.getText(
+            self, f"Add to {'Project' if glossary_type == 'project' else 'General'} Glossary",
+            f"English: {en_term}\n\nJapanese original:",
+            text=prefill,
+        )
+        if ok and jp_term.strip():
+            self.glossary_add.emit(jp_term.strip(), en_term, glossary_type)
 
     def _insert_code_at_cursor(self, code: str):
         """Insert a control code at the current cursor position in the translation editor."""

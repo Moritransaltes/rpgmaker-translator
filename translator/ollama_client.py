@@ -30,6 +30,31 @@ _JP_BRACKETS = {
 }
 
 
+# Regex to strip translator notes/commentary the LLM sometimes appends.
+# Matches common patterns at the end of the output.
+_NOTE_STRIP_RE = re.compile(
+    r'(?:'
+    r'\n\s*[-—–]{2,}\s*\n.*'                     # --- separator followed by notes
+    r'|\n\s*\*{2,}\s*\n.*'                        # *** separator followed by notes
+    r'|\n\s*(?:Note|Notes|Translation [Nn]ote|Translator\'?s? [Nn]ote|TL [Nn]ote|Commentary|Explanation)s?\s*[:：].*'
+    r'|\n\s*\((?:Note|Notes|Translation [Nn]ote|Translator\'?s? [Nn]ote|TL [Nn]ote)s?\s*[:：].*?\)\s*$'
+    r'|\n\s*\[(?:Note|Notes|Translation [Nn]ote|Translator\'?s? [Nn]ote|TL [Nn]ote)s?\s*[:：].*?\]\s*$'
+    r'|\n\s*\*(?:Note|Notes|Translation [Nn]ote|Translator\'?s? [Nn]ote|TL [Nn]ote)s?\s*[:：].*?\*\s*$'
+    r')',
+    re.DOTALL | re.IGNORECASE,
+)
+
+# Regex to detect Japanese characters remaining in translated output.
+# Matches hiragana, katakana, and CJK kanji.
+_JAPANESE_RE = re.compile(
+    r'[\u3040-\u309F'   # Hiragana
+    r'\u30A0-\u30FF'    # Katakana
+    r'\u4E00-\u9FFF'    # CJK Unified Ideographs (kanji)
+    r'\u3400-\u4DBF'    # CJK Extension A
+    r'\uFF65-\uFF9F]'   # Halfwidth Katakana
+)
+
+
 SYSTEM_PROMPT = """You are a professional Japanese to English translator specializing in RPG/video game dialogue, including adult (18+) content.
 
 Rules:
@@ -37,10 +62,13 @@ Rules:
 - Translate the Japanese text naturally into English suitable for an RPG game.
 - The text may contain opaque code markers like «CODE1», «CODE2», etc. These are internal engine tags. Output them EXACTLY as-is — never remove, translate, rewrite, or replace them with names or words.
 - Keep the same line break structure as the original when possible.
-- Do not add explanations, notes, or commentary — output ONLY the translated text.
+- NEVER add explanations, translator notes, commentary, or parenthetical remarks — output ONLY the translated text and nothing else. No "Note:", no "TL note:", no commentary of any kind.
 - If the text is already in English or is a proper noun, keep it as-is.
 - Match the tone and style of the original (casual, formal, dramatic, etc.).
 - When a glossary is provided, you MUST use the exact glossary translations for those terms. Never deviate from glossary entries.
+- ALWAYS translate katakana words into their English MEANING, not romanized form. Katakana loanwords from English should become the original English word (コンピュータ → Computer). Katakana Japanese slang/words must be translated to English meaning.
+- NEVER use romanized Japanese (romaji) in the output. Translate ALL Japanese words to proper English. Do NOT leave words like omanko, oppai, kimochi, sugoi, kawaii, baka, ecchi, hentai, etc. in romanized form — translate them to their actual English equivalents. The ONLY exceptions are: character names, place names, and preserved honorifics (-san, -chan, -kun, -sama, -sensei, -senpai, -dono).
+- Your output must contain NO Japanese characters (hiragana, katakana, or kanji). Everything must be fully translated to English.
 
 Pronoun rules (CRITICAL):
 - Japanese often omits pronouns entirely. Do NOT guess or infer pronouns randomly.
@@ -86,7 +114,7 @@ _NAME_SYSTEM_PROMPT = (
     "If the text is already in English, output it as-is."
 )
 
-# Supported target languages with quality ratings for Qwen2.5
+# Supported target languages with quality ratings for Qwen3
 # (name, stars, tooltip description)
 TARGET_LANGUAGES = [
     ("English",               "\u2605\u2605\u2605\u2605\u2605", "Best — primary JP translation target, huge parallel corpus"),
@@ -124,7 +152,7 @@ def _build_name_prompt(target_language: str = "English") -> str:
 class OllamaClient:
     """Client for Ollama's local LLM REST API."""
 
-    def __init__(self, base_url: str = "http://localhost:11434", model: str = "qwen2.5:14b"):
+    def __init__(self, base_url: str = "http://localhost:11434", model: str = "qwen3:14b"):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.system_prompt = SYSTEM_PROMPT  # Customizable system prompt
@@ -299,6 +327,22 @@ class OllamaClient:
             return text
 
     # ── Placeholder system ──────────────────────────────────────
+
+    @staticmethod
+    def _strip_notes(text: str) -> str:
+        """Remove translator notes/commentary the LLM sometimes appends."""
+        return _NOTE_STRIP_RE.sub('', text).rstrip()
+
+    @staticmethod
+    def _contains_japanese(text: str) -> bool:
+        """Check if text still contains Japanese characters (hiragana/katakana/kanji).
+
+        Used to detect incomplete translations where the LLM left Japanese
+        in the output. Ignores text inside «CODEn» placeholders.
+        """
+        # Remove code placeholders before checking
+        cleaned = re.sub(r'\u00abCODE\d+\u00bb', '', text)
+        return bool(_JAPANESE_RE.search(cleaned))
 
     @staticmethod
     def _extract_codes(text: str) -> tuple:
@@ -542,6 +586,49 @@ class OllamaClient:
             if not result:
                 raise ConnectionError("Ollama returned empty translation")
 
+            # Strip translator notes/commentary the LLM may have appended
+            result = self._strip_notes(result)
+
+            # Auto-retry if the translation still contains Japanese characters
+            if self._contains_japanese(result):
+                log.info("Translation contains Japanese — retrying with stronger prompt")
+                retry_msg = (
+                    "Your translation still contains Japanese characters. "
+                    "You MUST translate ALL Japanese text to English. "
+                    "Do not leave any hiragana, katakana, or kanji in the output. "
+                    "Do not romanize Japanese words — translate them to proper English.\n\n"
+                    f"Fix this translation:\n{result}"
+                )
+                messages_retry = [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": user_msg},
+                    {"role": "assistant", "content": result},
+                    {"role": "user", "content": retry_msg},
+                ]
+                try:
+                    r2 = requests.post(
+                        f"{self.base_url}/api/chat",
+                        json={
+                            "model": self.model,
+                            "messages": messages_retry,
+                            "stream": False,
+                            "options": {
+                                "temperature": 0,
+                                "seed": 42,
+                                "num_predict": 1024,
+                                "num_ctx": num_ctx,
+                            },
+                        },
+                        timeout=120,
+                    )
+                    r2.raise_for_status()
+                    retry_result = r2.json().get("message", {}).get("content", "").strip()
+                    if retry_result:
+                        retry_result = self._strip_notes(retry_result)
+                        result = retry_result
+                except requests.RequestException:
+                    pass  # Keep original result on retry failure
+
             # Post-process: restore control codes from placeholders
             if code_map:
                 result = self._restore_codes(result, code_map)
@@ -758,12 +845,35 @@ class OllamaClient:
         expected_keys = [key for key, *_ in entries]
         parsed = self._parse_batch_response(raw, expected_keys)
 
-        # Restore control codes per-entry
+        # Strip notes and restore control codes per-entry
+        # Collect entries that still have Japanese for individual retry
         results = {}
+        retry_entries = []
         for key, translation in parsed.items():
+            translation = self._strip_notes(translation)
+            if self._contains_japanese(translation):
+                # Find the original text for this key
+                orig = next((o for k, o, _c, _f in entries if k == key), None)
+                if orig:
+                    retry_entries.append((key, orig, translation))
+                    continue
             if code_maps.get(key):
                 translation = self._restore_codes(translation, code_maps[key])
             results[key] = translation
+
+        # Retry entries with Japanese via single translate() for better results
+        for key, original, bad_result in retry_entries:
+            log.info("Batch entry %s has Japanese — retrying individually", key)
+            try:
+                ctx = next((c for k, _o, c, _f in entries if k == key), "")
+                fld = next((f for k, _o, _c, f in entries if k == key), "")
+                result = self.translate(text=original, context=ctx, field=fld)
+                results[key] = result
+            except ConnectionError:
+                # Fall back to the bad result with codes restored
+                if code_maps.get(key):
+                    bad_result = self._restore_codes(bad_result, code_maps[key])
+                results[key] = bad_result
 
         return results
 
@@ -923,6 +1033,7 @@ class OllamaClient:
                 )
                 r.raise_for_status()
                 result = r.json().get("message", {}).get("content", "").strip()
+                result = self._strip_notes(result)
                 if code_map:
                     result = self._restore_codes(result, code_map)
                 # Only add if it's actually different
@@ -950,6 +1061,7 @@ class OllamaClient:
                     )
                     r2.raise_for_status()
                     result2 = r2.json().get("message", {}).get("content", "").strip()
+                    result2 = self._strip_notes(result2)
                     if code_map:
                         result2 = self._restore_codes(result2, code_map)
                     if result2 and result2 not in variants:

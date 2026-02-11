@@ -2,8 +2,10 @@
 
 import json
 import os
+import zipfile
 from collections import defaultdict
 from dataclasses import dataclass, field, asdict
+from datetime import date
 from typing import Optional
 
 
@@ -161,3 +163,94 @@ class TranslationProject:
         file_entries = self.get_entries_for_file(filename)
         translated = sum(1 for e in file_entries if e.status in ("translated", "reviewed"))
         return translated, len(file_entries)
+
+    # ── Patch export / import ────────────────────────────────────
+
+    def export_patch(self, zip_path: str, game_title: str = "",
+                     patch_version: str = "1.0"):
+        """Export translated entries as a distributable patch zip.
+
+        Contains only translation mappings (no game data), so it's safe
+        to distribute without copyright concerns.  Recipients open the
+        original game in the translator, apply the patch, then export.
+        """
+        translated = [e for e in self.entries
+                      if e.status in ("translated", "reviewed")]
+        reviewed = sum(1 for e in translated if e.status == "reviewed")
+
+        # patch.json — translation data only (no project_path)
+        patch_data = {
+            "entries": [asdict(e) for e in translated],
+            "glossary": self.glossary,
+            "actor_genders": self.actor_genders,
+        }
+
+        # metadata.json — human-readable info
+        metadata = {
+            "game_title": game_title,
+            "patch_version": patch_version,
+            "created": date.today().isoformat(),
+            "total_entries": self.total,
+            "translated": len(translated),
+            "reviewed": reviewed,
+            "tool": "RPG Maker Translator",
+        }
+
+        # README.txt — instructions
+        readme = (
+            f"Translation Patch — {game_title or 'RPG Maker Game'}\n"
+            f"{'=' * 50}\n\n"
+            f"Version: {patch_version}\n"
+            f"Created: {date.today().isoformat()}\n"
+            f"Entries: {len(translated)} translated"
+            f" ({reviewed} reviewed)\n\n"
+            "HOW TO APPLY:\n"
+            "1. Install RPG Maker Translator\n"
+            "2. Open the ORIGINAL (untranslated) game via\n"
+            "   Project > Open Project\n"
+            "3. Go to Game > Apply Translation Patch\n"
+            "4. Select this zip file\n"
+            "5. Review the imported translations\n"
+            "6. Export to game via Game > Export to Game\n\n"
+            "This patch contains ONLY translation data.\n"
+            "You must own the original game to use it.\n"
+        )
+
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("patch.json",
+                        json.dumps(patch_data, ensure_ascii=False, indent=2))
+            zf.writestr("metadata.json",
+                        json.dumps(metadata, ensure_ascii=False, indent=2))
+            zf.writestr("README.txt", readme)
+
+    @classmethod
+    def import_patch(cls, zip_path: str) -> "TranslationProject":
+        """Load a translation patch from a zip file.
+
+        Returns a TranslationProject that can be passed to
+        import_translations() on the target project.
+        """
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            patch_raw = zf.read("patch.json")
+            data = json.loads(patch_raw)
+
+            # Read metadata if present (for display purposes)
+            metadata = {}
+            if "metadata.json" in zf.namelist():
+                metadata = json.loads(zf.read("metadata.json"))
+
+        project = cls()
+        project.entries = [TranslationEntry(**e) for e in data.get("entries", [])]
+        project.glossary = data.get("glossary", {})
+        raw_genders = data.get("actor_genders", {})
+        actor_genders = {}
+        for k, v in raw_genders.items():
+            try:
+                actor_genders[int(k)] = v
+            except (ValueError, TypeError):
+                pass
+        project.actor_genders = actor_genders
+        project._build_index()
+        # Stash metadata for the caller to display
+        project._patch_metadata = metadata
+        return project

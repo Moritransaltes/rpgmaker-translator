@@ -26,7 +26,7 @@ If applicable, add screenshots.
 **Environment**
 - OS: [e.g. Windows 11]
 - Python version: [e.g. 3.12]
-- Ollama model: [e.g. qwen2.5:14b]
+- Ollama model: [e.g. qwen3:14b]
 - RPG Maker version: [MV / MZ]
 
 **Additional context**

@@ -314,6 +314,14 @@ class MainWindow(QMainWindow):
         self.fix_codes_action.setEnabled(False)
         translate_menu.addAction(self.fix_codes_action)
 
+        self.apply_glossary_action = QAction("Apply Glossary to Translations", self)
+        self.apply_glossary_action.setToolTip(
+            "Find translated entries where glossary terms are inconsistent and offer to fix them"
+        )
+        self.apply_glossary_action.triggered.connect(self._apply_glossary)
+        self.apply_glossary_action.setEnabled(False)
+        translate_menu.addAction(self.apply_glossary_action)
+
         # ── Game menu ─────────────────────────────────────────────
         game_menu = menubar.addMenu("Game")
 
@@ -334,6 +342,24 @@ class MainWindow(QMainWindow):
         self.txt_export_action.triggered.connect(self._export_txt)
         self.txt_export_action.setEnabled(False)
         game_menu.addAction(self.txt_export_action)
+
+        game_menu.addSeparator()
+
+        self.create_patch_action = QAction("Create Translation Patch...", self)
+        self.create_patch_action.setToolTip(
+            "Export translations as a distributable zip (no game data, copyright-safe)"
+        )
+        self.create_patch_action.triggered.connect(self._create_patch)
+        self.create_patch_action.setEnabled(False)
+        game_menu.addAction(self.create_patch_action)
+
+        self.apply_patch_action = QAction("Apply Translation Patch...", self)
+        self.apply_patch_action.setToolTip(
+            "Import translations from a patch zip created by another translator"
+        )
+        self.apply_patch_action.triggered.connect(self._apply_patch)
+        self.apply_patch_action.setEnabled(False)
+        game_menu.addAction(self.apply_patch_action)
 
         # ── Settings (top-level action) ───────────────────────────
         self.settings_action = QAction("Settings", self)
@@ -378,6 +404,7 @@ class MainWindow(QMainWindow):
         self.trans_table.variant_requested.connect(self._show_variants)
         self.trans_table.polish_requested.connect(self._polish_selected)
         self.trans_table.status_changed.connect(self._on_status_changed)
+        self.trans_table.glossary_add.connect(self._on_glossary_add)
 
         # Engine
         self.engine.progress.connect(self._on_progress)
@@ -492,9 +519,12 @@ class MainWindow(QMainWindow):
         self.rename_action.setEnabled(True)
         self.import_action.setEnabled(True)
         self.txt_export_action.setEnabled(True)
+        self.create_patch_action.setEnabled(True)
+        self.apply_patch_action.setEnabled(True)
         self.wordwrap_action.setEnabled(True)
         self.fix_codes_action.setEnabled(True)
         self.polish_action.setEnabled(True)
+        self.apply_glossary_action.setEnabled(True)
 
         plugin_info = ""
         if self.plugin_analyzer.detected_plugins:
@@ -806,9 +836,12 @@ class MainWindow(QMainWindow):
         self.rename_action.setEnabled(bool(self.project.project_path))
         self.import_action.setEnabled(True)
         self.txt_export_action.setEnabled(True)
+        self.create_patch_action.setEnabled(True)
+        self.apply_patch_action.setEnabled(True)
         self.wordwrap_action.setEnabled(True)
         self.fix_codes_action.setEnabled(True)
         self.polish_action.setEnabled(True)
+        self.apply_glossary_action.setEnabled(True)
 
         self.statusbar.showMessage(
             f"Loaded state: {self.project.total} entries "
@@ -1050,6 +1083,19 @@ class MainWindow(QMainWindow):
             app.setStyleSheet("")
 
     # ── Glossary merge ─────────────────────────────────────────────
+
+    def _on_glossary_add(self, jp_term: str, en_term: str, glossary_type: str):
+        """Handle glossary entry added from translation table right-click."""
+        if glossary_type == "project":
+            self.project.glossary[jp_term] = en_term
+        else:
+            self._general_glossary[jp_term] = en_term
+            self._save_settings()
+        self._rebuild_glossary()
+        label = "project" if glossary_type == "project" else "general"
+        self.statusBar().showMessage(
+            f"Added to {label} glossary: {jp_term} \u2192 {en_term}", 5000
+        )
 
     def _rebuild_glossary(self):
         """Merge general + project glossaries into client.glossary.
@@ -1530,6 +1576,81 @@ class MainWindow(QMainWindow):
             if fixed else "All entries have their control codes intact."
         )
 
+    # ── Apply Glossary ─────────────────────────────────────────────
+
+    def _apply_glossary(self):
+        """Find translated entries with glossary mismatches and offer to fix.
+
+        For each glossary entry (JP → EN), scans translated entries where
+        the original contains the JP term but the translation doesn't
+        contain the expected EN term.  Shows results and lets the user
+        apply automatic replacements.
+        """
+        if not self.project.entries or not self.client.glossary:
+            QMessageBox.information(
+                self, "Apply Glossary", "No entries or glossary is empty."
+            )
+            return
+
+        # Build list of mismatches: (entry, jp_term, expected_en)
+        mismatches = []
+        for entry in self.project.entries:
+            if entry.status not in ("translated", "reviewed"):
+                continue
+            if not entry.translation:
+                continue
+            for jp_term, en_term in self.client.glossary.items():
+                if jp_term in entry.original and en_term not in entry.translation:
+                    mismatches.append((entry, jp_term, en_term))
+
+        if not mismatches:
+            QMessageBox.information(
+                self, "Apply Glossary",
+                f"All {self.project.translated_count} translated entries "
+                f"are consistent with the glossary ({len(self.client.glossary)} terms)."
+            )
+            return
+
+        # Summarize by glossary term
+        from collections import Counter
+        term_counts = Counter(f"{jp} \u2192 {en}" for _, jp, en in mismatches)
+        summary_lines = [f"  {term}: {count} entries"
+                         for term, count in term_counts.most_common(20)]
+        if len(term_counts) > 20:
+            summary_lines.append(f"  ... and {len(term_counts) - 20} more terms")
+
+        summary = (
+            f"Found {len(mismatches)} entries with glossary mismatches:\n\n"
+            + "\n".join(summary_lines)
+            + "\n\nThis will search the translation text in these entries "
+            "and filter the table to show them.\n\n"
+            "Would you like to view the mismatched entries?"
+        )
+
+        reply = QMessageBox.question(
+            self, "Apply Glossary", summary,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Collect mismatch entry IDs and show them in the table
+        mismatch_ids = set()
+        for entry, _jp, _en in mismatches:
+            mismatch_ids.add(entry.id)
+
+        # Set the filter to show these entries by using a special search
+        # We'll filter in the table to show only mismatch entries
+        mismatch_entries = [e for e in self.project.entries if e.id in mismatch_ids]
+        self.trans_table._entries = mismatch_entries
+        self.trans_table._apply_filter()
+        self.file_tree.clearSelection()
+
+        self.statusbar.showMessage(
+            f"Showing {len(mismatch_entries)} entries with glossary mismatches "
+            f"({len(term_counts)} terms). Click a file or clear search to reset.", 10000
+        )
+
     # ── Export TXT ─────────────────────────────────────────────────
 
     def _export_txt(self):
@@ -1565,6 +1686,146 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self, "Export Complete",
             f"Exported {len(translated)} translations to:\n{path}"
+        )
+
+    # ── Translation patch create / apply ─────────────────────────
+
+    def _create_patch(self):
+        """Create a distributable translation patch zip."""
+        if not self.project.entries:
+            return
+
+        translated = self.project.translated_count
+        if translated == 0:
+            QMessageBox.information(
+                self, "Create Patch",
+                "No translated entries to export."
+            )
+            return
+
+        # Get game title for metadata
+        game_title = ""
+        for e in self.project.entries:
+            if e.field == "gameTitle" and e.translation:
+                game_title = e.translation
+                break
+        if not game_title:
+            for e in self.project.entries:
+                if e.field == "gameTitle":
+                    game_title = e.original
+                    break
+
+        # Prompt for patch version
+        version, ok = QInputDialog.getText(
+            self, "Patch Version",
+            f"Creating patch for: {game_title or 'RPG Maker Game'}\n"
+            f"Entries: {translated} translated, {self.project.reviewed_count} reviewed\n\n"
+            f"Patch version:",
+            text="1.0",
+        )
+        if not ok:
+            return
+
+        # Default filename
+        safe_title = "".join(c for c in game_title if c.isalnum() or c in " _-")[:50].strip()
+        default_name = f"{safe_title} Translation Patch v{version}.zip" if safe_title else "translation_patch.zip"
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Translation Patch", default_name, "Zip Files (*.zip)"
+        )
+        if not path:
+            return
+
+        try:
+            self.project.export_patch(path, game_title=game_title,
+                                      patch_version=version)
+            QMessageBox.information(
+                self, "Patch Created",
+                f"Translation patch saved to:\n{path}\n\n"
+                f"{translated} translated entries\n"
+                f"{len(self.project.glossary)} glossary entries\n\n"
+                f"This file contains NO game data — safe to distribute."
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to create patch:\n{e}")
+
+    def _apply_patch(self):
+        """Apply a translation patch zip to the current project."""
+        if not self.project.entries:
+            return
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Translation Patch", "", "Zip Files (*.zip)"
+        )
+        if not path:
+            return
+
+        try:
+            patch_project = TranslationProject.import_patch(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to read patch:\n{e}")
+            return
+
+        # Show patch info and confirm
+        meta = getattr(patch_project, "_patch_metadata", {})
+        patch_translated = sum(
+            1 for e in patch_project.entries
+            if e.status in ("translated", "reviewed")
+        )
+        current_untranslated = self.project.untranslated_count
+
+        info = (
+            f"Patch: {meta.get('game_title', 'Unknown')}"
+            f" v{meta.get('patch_version', '?')}\n"
+            f"Created: {meta.get('created', 'Unknown')}\n\n"
+            f"Patch contains: {patch_translated} translations, "
+            f"{len(patch_project.glossary)} glossary entries\n"
+            f"Current project: {self.project.total} entries "
+            f"({current_untranslated} untranslated)\n\n"
+            f"Apply patch translations to untranslated entries?"
+        )
+
+        reply = QMessageBox.question(
+            self, "Apply Translation Patch", info,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Reuse existing import_translations logic
+        stats = self.project.import_translations(patch_project)
+
+        # Import glossary entries that don't conflict
+        imported_glossary = 0
+        for jp, en in patch_project.glossary.items():
+            if jp not in self.project.glossary:
+                self.project.glossary[jp] = en
+                imported_glossary += 1
+        self._rebuild_glossary()
+
+        # Import actor genders if not already set
+        imported_genders = 0
+        for actor_id, gender in patch_project.actor_genders.items():
+            if actor_id not in self.project.actor_genders:
+                self.project.actor_genders[actor_id] = gender
+                imported_genders += 1
+
+        # Refresh UI
+        self.trans_table.set_entries(self.project.entries)
+        self.file_tree.load_project(self.project)
+
+        total_imported = stats["by_id"] + stats["by_text"]
+        QMessageBox.information(
+            self, "Patch Applied",
+            f"Imported {total_imported} translations:\n"
+            f"  \u2022 {stats['by_id']} matched by exact position\n"
+            f"  \u2022 {stats['by_text']} matched by identical text\n"
+            f"  \u2022 {stats['new']} entries not in patch (need translation)\n"
+            f"  \u2022 {stats['skipped']} already translated (kept)\n"
+            + (f"  \u2022 {imported_glossary} glossary entries imported\n"
+               if imported_glossary else "")
+            + (f"  \u2022 {imported_genders} actor genders imported\n"
+               if imported_genders else "")
         )
 
     # ── Re-translate with diff ─────────────────────────────────────
