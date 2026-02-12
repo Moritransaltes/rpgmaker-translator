@@ -1365,48 +1365,6 @@ class RPGMakerMVParser:
         """
         return []
 
-    # ── DISABLED: plugins.js parameter scanning ──────────────────
-    # Over-extracted internal identifiers, config keys, and command
-    # keywords that broke games when translated.  Replaced by the
-    # whitelist approach for event codes 356/357 above.
-    #
-    # def _scan_plugin_param(self, value, id_prefix, entries):
-    #     stripped = value.strip()
-    #     if stripped.startswith(("{", "[")):
-    #         try:
-    #             parsed = json.loads(stripped)
-    #             self._scan_parsed_value(parsed, id_prefix, entries)
-    #             return
-    #         except (json.JSONDecodeError, ValueError):
-    #             pass
-    #     if _is_plugin_display_text(value):
-    #         entries.append(TranslationEntry(
-    #             id=id_prefix, file="plugins.js", field="plugin_param",
-    #             original=value, status="skipped",
-    #         ))
-    #
-    # def _scan_parsed_value(self, obj, id_prefix, entries):
-    #     if isinstance(obj, str):
-    #         stripped = obj.strip()
-    #         if stripped.startswith(("{", "[")):
-    #             try:
-    #                 inner = json.loads(stripped)
-    #                 self._scan_parsed_value(inner, id_prefix, entries)
-    #                 return
-    #             except (json.JSONDecodeError, ValueError):
-    #                 pass
-    #         if _is_plugin_display_text(obj):
-    #             entries.append(TranslationEntry(
-    #                 id=id_prefix, file="plugins.js", field="plugin_param",
-    #                 original=obj, status="skipped",
-    #             ))
-    #     elif isinstance(obj, list):
-    #         for i, item in enumerate(obj):
-    #             self._scan_parsed_value(item, f"{id_prefix}/[{i}]", entries)
-    #     elif isinstance(obj, dict):
-    #         for k, v in obj.items():
-    #             self._scan_parsed_value(v, f"{id_prefix}/{k}", entries)
-
     def _save_plugins(self, project_dir: str, entries: list):
         """Write translated plugin parameter values back into plugins.js."""
         # Filter to only plugin entries with translations

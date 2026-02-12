@@ -14,9 +14,6 @@ from . import CONTROL_CODE_RE, JAPANESE_RE
 log = logging.getLogger(__name__)
 
 
-# Backward-compat alias — main_window.py imports this name
-_CONTROL_CODE_RE = CONTROL_CODE_RE
-
 # Japanese bracket pairs → English equivalents
 _JP_BRACKETS = {
     '\u300c': '"', '\u300d': '"',   # 「 」 → " "
@@ -45,8 +42,6 @@ _NOTE_STRIP_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
-# Alias for local usage
-_JAPANESE_RE = JAPANESE_RE
 
 
 def _to_pig_latin(text: str) -> str:
@@ -480,7 +475,7 @@ class OllamaClient:
         """
         # Remove code placeholders before checking
         cleaned = re.sub(r'\u00abCODE\d+\u00bb', '', text)
-        return bool(_JAPANESE_RE.search(cleaned))
+        return bool(JAPANESE_RE.search(cleaned))
 
     @staticmethod
     def _extract_codes(text: str) -> tuple:
@@ -501,7 +496,7 @@ class OllamaClient:
             mapping[key] = m.group(0)
             return key
 
-        cleaned = _CONTROL_CODE_RE.sub(_replace, text)
+        cleaned = CONTROL_CODE_RE.sub(_replace, text)
         return cleaned, mapping
 
     @staticmethod

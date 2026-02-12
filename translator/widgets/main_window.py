@@ -1743,7 +1743,7 @@ class MainWindow(QMainWindow):
         if not self.project.entries:
             return 0
 
-        from ..ollama_client import _CONTROL_CODE_RE
+        from .. import CONTROL_CODE_RE
 
         fixed = 0
         for entry in self.project.entries:
@@ -1752,7 +1752,7 @@ class MainWindow(QMainWindow):
             if not entry.translation:
                 continue
 
-            orig_codes = _CONTROL_CODE_RE.findall(entry.original)
+            orig_codes = CONTROL_CODE_RE.findall(entry.original)
             if not orig_codes:
                 continue
 
