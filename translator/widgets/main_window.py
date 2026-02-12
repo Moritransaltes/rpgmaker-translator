@@ -177,6 +177,7 @@ class MainWindow(QMainWindow):
         self._actors_ready = False  # True after actor gender dialog has been shown/skipped
         self._batch_start_time = 0
         self._batch_done_count = 0
+        self._tm_checkpoint_count = 0
         self._last_save_path = ""
         self._general_glossary = {}  # persists across all projects
         self.client.vision_model = ""  # vision model for image OCR
@@ -1583,8 +1584,9 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # Translation memory first (same as _start_batch)
+        # Glossary prefill + translation memory (same as _start_batch)
         self._current_batch_mode = "all"
+        gp_count = self._run_glossary_prefill()
         tm_count = self._run_translation_memory()
 
         untranslated = [e for e in self.project.entries if e.status == "untranslated"]
@@ -1647,8 +1649,13 @@ class MainWindow(QMainWindow):
             parts.append(f"  Non-dialogue (DB/plugins): {len(non_dialog)}")
         summary = "\n".join(parts)
 
+        prefill_notes = []
+        if gp_count:
+            prefill_notes.append(f"glossary: {gp_count}")
         if tm_count:
-            summary += f"\n\n  (Translation memory filled {tm_count} duplicates)"
+            prefill_notes.append(f"TM: {tm_count}")
+        if prefill_notes:
+            summary += f"\n\n  (Pre-filled {', '.join(prefill_notes)} entries)"
 
         reply = QMessageBox.question(
             self, "Batch by Actor",
@@ -1706,6 +1713,40 @@ class MainWindow(QMainWindow):
 
         return tm_count
 
+    def _run_glossary_prefill(self) -> int:
+        """Fill untranslated entries whose full text is an exact glossary key.
+
+        When the entire original text (stripped) matches a glossary key exactly,
+        we use the glossary translation directly, skipping the LLM call.
+        Respects self._current_batch_mode for db/dialogue filtering.
+        Returns the number of entries filled.
+        """
+        glossary = self.client.glossary
+        if not glossary:
+            return 0
+
+        mode = getattr(self, "_current_batch_mode", "all")
+        count = 0
+        for e in self.project.entries:
+            if e.status != "untranslated":
+                continue
+            if mode == "db" and e.file not in self._DB_FILES:
+                continue
+            if mode == "dialogue" and e.file in self._DB_FILES:
+                continue
+            stripped = e.original.strip()
+            if stripped in glossary:
+                e.translation = glossary[stripped]
+                e.status = "translated"
+                self.trans_table.update_entry(e.id, e.translation)
+                self._maybe_add_to_glossary(e)
+                count += 1
+
+        if count:
+            self.file_tree.refresh_stats(self.project)
+
+        return count
+
     @staticmethod
     def _sort_for_tm_priority(entries: list) -> list:
         """Sort entries to maximize translation memory hits at checkpoints.
@@ -1758,11 +1799,20 @@ class MainWindow(QMainWindow):
 
         self._current_batch_mode = mode
 
+        # Glossary prefill: exact-match entries skip LLM entirely
+        gp_count = self._run_glossary_prefill()
+
         # Translation memory: auto-fill exact duplicates from already-translated entries
         tm_count = self._run_translation_memory()
+
+        prefill_parts = []
+        if gp_count:
+            prefill_parts.append(f"glossary: {gp_count}")
         if tm_count:
+            prefill_parts.append(f"TM: {tm_count}")
+        if prefill_parts:
             self.statusbar.showMessage(
-                f"Translation memory: filled {tm_count} duplicate(s)", 3000
+                f"Pre-filled {', '.join(prefill_parts)} entries", 3000
             )
 
         untranslated = [e for e in self.project.entries if e.status == "untranslated"]
