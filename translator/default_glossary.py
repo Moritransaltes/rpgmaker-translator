@@ -32,6 +32,14 @@ BODY = {
     "恥丘": "pubic mound",
     "お股": "crotch",
     "秘部": "genitals",
+    "尻": "ass",
+    "胸": "breasts",
+    "腰": "waist",
+    "股間": "crotch",
+    "肛門": "anus",
+    "亀頭": "glans",
+    "乳輪": "areola",
+    "肉棒": "cock",
 }
 
 # ── Sexual acts / states ────────────────────────────────────────
@@ -95,6 +103,21 @@ ACTS = {
     "膣外射精": "non-creampie",
     "乳揉まれ": "fondled",
     "尻揉まれ": "ass groped",
+    "愛撫": "caress",
+    "陵辱": "violation",
+    "乱交": "orgy",
+    "逆レイプ": "reverse rape",
+    "夜這い": "night crawling",
+    "淫語": "dirty talk",
+    "喘ぎ声": "moaning",
+    "母乳": "breast milk",
+    "異種姦": "interspecies sex",
+    "近親相姦": "incest",
+    "二穴": "double penetration",
+    "愛液": "love juice",
+    "淫紋": "lewd crest",
+    "強姦": "rape",
+    "精飲": "cum drinking",
 }
 
 # ── RPG / game terms ────────────────────────────────────────────
@@ -175,6 +198,16 @@ RPG = {
     "回想する": "Recollection",
     "討伐": "Extermination",
     "邪気": "Miasma",
+    "所持金": "Money",
+    "持ち物": "Inventory",
+    "道具": "Items",
+    "使う": "Use",
+    "捨てる": "Discard",
+    "確認": "Confirm",
+    "戻る": "Back",
+    "決定": "OK",
+    "次へ": "Next",
+    "閉じる": "Close",
     # Locations
     "避暑地": "summer resort",
     "別荘": "villa",
@@ -259,6 +292,16 @@ COMBAT = {
     "暗黒": "Dark",
     "木": "Wood",
     "地": "Earth",
+    "凍結": "Frozen",
+    "炎": "Flame",
+    "大地": "Earth",
+    "ダメージ": "Damage",
+    "黒魔法": "Black Magic",
+    "白魔法": "White Magic",
+    "全体": "All",
+    "敵": "Enemy",
+    "味方": "Ally",
+    "属性": "Attribute",
     # Additional
     "状態異常": "Status Ailment",
     "ターン終了": "End Turn",
@@ -290,6 +333,12 @@ STATS = {
     "知力": "Intelligence",
     "精神": "Spirit",
     "魅力": "Charisma",
+    "力": "Strength",
+    "知性": "Intelligence",
+    "器用": "Dexterity",
+    "職業": "Job",
+    "特技": "Special Skill",
+    "技": "Technique",
 }
 
 # ── Equipment / items ────────────────────────────────────────────
@@ -364,6 +413,10 @@ STATUS = {
     "絶頂回数": "orgasms",
     "経験人数": "partners",
     "射精量": "cum amount",
+    "恐怖": "fear",
+    "洗脳": "brainwashing",
+    "信頼度": "trust",
+    "妊娠回数": "pregnancies",
 }
 
 # ── Fantasy races / classes ────────────────────────────────────
@@ -446,6 +499,18 @@ RACES = {
     "軟体型": "slime type",
     "虫型": "insect type",
     "竜": "dragon",
+    "ドラゴン": "dragon",
+    "ワーウルフ": "werewolf",
+    "グリフォン": "griffin",
+    "ゴーレム": "golem",
+    "トロール": "troll",
+    "キメラ": "chimera",
+    "ワイバーン": "wyvern",
+    "フェニックス": "phoenix",
+    "狼": "wolf",
+    "蜘蛛": "spider",
+    "蝙蝠": "bat",
+    "蛇": "snake",
 }
 
 # ── Clothing / attire ──────────────────────────────────────────
@@ -472,6 +537,16 @@ CLOTHING = {
     "手枷": "handcuffs",
     "目隠し": "blindfold",
     "猿轡": "ball gag",
+    "タイツ": "tights",
+    "エプロン": "apron",
+    "スカート": "skirt",
+    "ドレス": "dress",
+    "マント": "cloak",
+    "着物": "kimono",
+    "浴衣": "yukata",
+    "体操服": "gym uniform",
+    "ブルマ": "bloomers",
+    "スクール水着": "school swimsuit",
 }
 
 # ── Gambling / poker ─────────────────────────────────────────────
@@ -615,6 +690,12 @@ EXPRESSIONS = {
     "メスガキ": "bratty girl",
     "クソガキ": "brat",
     "ガキ": "brat",
+    "あん": "Ahn~",
+    "んっ": "Mmh",
+    "痛い": "It hurts",
+    "怖い": "Scary",
+    "嬉しい": "Happy",
+    "熱い": "Hot",
 }
 
 # ── Onomatopoeia / SFX ───────────────────────────────────────────
