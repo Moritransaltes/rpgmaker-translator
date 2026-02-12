@@ -121,6 +121,7 @@ from ..text_processor import PluginAnalyzer, TextProcessor
 from .file_tree import FileTreeWidget
 from .translation_table import TranslationTable
 from .settings_dialog import SettingsDialog
+from .glossary_dialog import GlossaryDialog
 from .actor_gender_dialog import ActorGenderDialog
 from .variant_dialog import VariantDialog
 from .image_panel import ImagePanel
@@ -389,6 +390,12 @@ class MainWindow(QMainWindow):
 
         # ── Glossary menu ─────────────────────────────────────────
         glossary_menu = menubar.addMenu("Glossary")
+
+        self.edit_glossary_action = QAction("Edit Glossary...", self)
+        self.edit_glossary_action.triggered.connect(self._open_glossary)
+        glossary_menu.addAction(self.edit_glossary_action)
+
+        glossary_menu.addSeparator()
 
         self.load_vocab_action = QAction("Import Vocab File...", self)
         self.load_vocab_action.setToolTip(
@@ -1936,20 +1943,22 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(
             self.client, self, parser=self.parser, dark_mode=self._dark_mode,
             plugin_analyzer=self.plugin_analyzer, engine=self.engine,
-            general_glossary=self._general_glossary,
-            project_glossary=self.project.glossary,
         )
         if dlg.exec():
-            # Update both glossaries from dialog results
-            self._general_glossary = dlg.general_glossary
-            self.project.glossary = dlg.project_glossary
-            self._rebuild_glossary()
             # Apply dark mode if changed
             if dlg.dark_mode != self._dark_mode:
                 self._dark_mode = dlg.dark_mode
                 self._apply_dark_mode()
                 self.trans_table.set_dark_mode(self._dark_mode)
-            # Persist settings to disk
+            self._save_settings()
+
+    def _open_glossary(self):
+        """Open the standalone glossary editor."""
+        dlg = GlossaryDialog(self, self._general_glossary, self.project.glossary)
+        if dlg.exec():
+            self._general_glossary = dlg.general_glossary
+            self.project.glossary = dlg.project_glossary
+            self._rebuild_glossary()
             self._save_settings()
 
     # ── Filtering ──────────────────────────────────────────────────
