@@ -165,6 +165,7 @@ class MainWindow(QMainWindow):
         self.plugin_analyzer = PluginAnalyzer()
         self.text_processor = TextProcessor(self.plugin_analyzer)
         self._dark_mode = True
+        self._actors_ready = False  # True after actor gender dialog has been shown/skipped
         self._batch_start_time = 0
         self._batch_done_count = 0
         self._last_save_path = ""
@@ -470,55 +471,8 @@ class MainWindow(QMainWindow):
         self.file_tree.load_project(self.project)
         self.trans_table.set_entries(entries)
 
-        # Load actors for gender assignment
-        actors_raw = self.parser.load_actors_raw(path)
-
-        # Pre-translate game title + actor info so the user can read them
-        translated_title = ""
-        actor_translations = {}
-        raw_title = self.parser.get_game_title(path)
-        has_jp_title = any(e.id == "System.json/gameTitle" for e in entries)
-        if actors_raw or has_jp_title:
-            actor_translations, translated_title = self._pre_translate_info(
-                entries, actors_raw
-            )
-        # If game title is already English (not in entries), use it directly
-        if not translated_title and raw_title and not has_jp_title:
-            translated_title = raw_title
-
-        # Auto-glossary: add translated actor names to project glossary
-        # so the LLM uses them consistently when they appear in dialogue
-        for aid, tl in actor_translations.items():
-            for field in ("name", "nickname"):
-                en = tl.get(field, "")
-                if not en:
-                    continue
-                # Find the original JP text for this actor field
-                actor = next((a for a in actors_raw if a["id"] == aid), None)
-                if not actor:
-                    continue
-                jp = actor.get(field, "")
-                if jp and en != jp and jp not in self.project.glossary:
-                    self.project.glossary[jp] = en
-
-        # Show gender assignment dialog with translated names
-        if actors_raw:
-            dlg = ActorGenderDialog(actors_raw, self, translations=actor_translations)
-            if dlg.exec():
-                genders = dlg.get_genders()
-            else:
-                # User skipped — use auto-detected genders
-                genders = {a["id"]: a["auto_gender"] for a in actors_raw
-                           if a["auto_gender"] != "unknown"}
-            actor_ctx = self.parser.build_actor_context(actors_raw, genders)
-            self.client.actor_context = actor_ctx
-            self.client.actor_genders = genders
-            self.client.actor_names = {a["id"]: a["name"] for a in actors_raw}
-            self.project.actor_genders = genders
-        else:
-            self.client.actor_context = ""
-            self.client.actor_genders = {}
-            self.client.actor_names = {}
+        # Defer actor gender dialog + pre-translate to first batch start
+        self._actors_ready = False
 
         # Offer to load default glossary terms into the general glossary
         if not self._general_glossary:
@@ -538,10 +492,6 @@ class MainWindow(QMainWindow):
 
         # Rebuild merged glossary (general + project auto-glossary entries)
         self._rebuild_glossary()
-
-        # Offer to rename folder to English title
-        path = self._rename_project_folder(path, translated_title)
-        self.project.project_path = path
 
         # Analyze plugins for word wrap settings
         self.plugin_analyzer.analyze_project(path)
@@ -705,6 +655,76 @@ class MainWindow(QMainWindow):
 
         progress.close()
         return actor_translations, translated_title
+
+    def _ensure_actors_ready(self) -> bool:
+        """Run actor pre-translate + gender dialog once before first batch.
+
+        Returns True if ready to proceed, False if user cancelled or
+        no project is open.
+        """
+        if self._actors_ready:
+            return True
+
+        path = self.project.project_path
+        if not path:
+            return False
+
+        entries = self.project.entries
+        actors_raw = self.parser.load_actors_raw(path)
+
+        # Pre-translate game title + actor info so the user can read them
+        translated_title = ""
+        actor_translations = {}
+        raw_title = self.parser.get_game_title(path)
+        has_jp_title = any(e.id == "System.json/gameTitle" for e in entries)
+        if actors_raw or has_jp_title:
+            actor_translations, translated_title = self._pre_translate_info(
+                entries, actors_raw
+            )
+        if not translated_title and raw_title and not has_jp_title:
+            translated_title = raw_title
+
+        # Auto-glossary: add translated actor names to project glossary
+        for aid, tl in actor_translations.items():
+            for field_name in ("name", "nickname"):
+                en = tl.get(field_name, "")
+                if not en:
+                    continue
+                actor = next((a for a in actors_raw if a["id"] == aid), None)
+                if not actor:
+                    continue
+                jp = actor.get(field_name, "")
+                if jp and en != jp and jp not in self.project.glossary:
+                    self.project.glossary[jp] = en
+
+        # Show gender assignment dialog with translated names
+        if actors_raw:
+            dlg = ActorGenderDialog(actors_raw, self, translations=actor_translations)
+            if dlg.exec():
+                genders = dlg.get_genders()
+            else:
+                genders = {a["id"]: a["auto_gender"] for a in actors_raw
+                           if a["auto_gender"] != "unknown"}
+            actor_ctx = self.parser.build_actor_context(actors_raw, genders)
+            self.client.actor_context = actor_ctx
+            self.client.actor_genders = genders
+            self.client.actor_names = {a["id"]: a["name"] for a in actors_raw}
+            self.project.actor_genders = genders
+        else:
+            self.client.actor_context = ""
+            self.client.actor_genders = {}
+            self.client.actor_names = {}
+
+        # Rebuild glossary with any new actor name entries
+        self._rebuild_glossary()
+
+        # Offer to rename folder to English title (only on first run)
+        if translated_title:
+            new_path = self._rename_project_folder(path, translated_title)
+            self.project.project_path = new_path
+
+        self._actors_ready = True
+        return True
 
     def _backfill_db_glossary(self):
         """Add DB name glossary entries from already-translated entries.
@@ -880,7 +900,7 @@ class MainWindow(QMainWindow):
         # Restore glossary: merge general (global) + project (per-game)
         self._rebuild_glossary()
 
-        # Restore actor context from saved genders
+        # Restore actor context from saved genders (skip dialog on next batch)
         if self.project.actor_genders and self.project.project_path:
             actors_raw = self.parser.load_actors_raw(self.project.project_path)
             if actors_raw:
@@ -889,6 +909,9 @@ class MainWindow(QMainWindow):
                 )
                 self.client.actor_genders = self.project.actor_genders
                 self.client.actor_names = {a["id"]: a["name"] for a in actors_raw}
+            self._actors_ready = True
+        else:
+            self._actors_ready = False
 
         # Backfill auto-glossary for all DB name fields if missing
         # (for projects saved before this feature existed)
@@ -1384,6 +1407,10 @@ class MainWindow(QMainWindow):
             )
             return
 
+        # First batch: run actor pre-translate + gender dialog
+        if not self._ensure_actors_ready():
+            return
+
         if not self.client.actor_genders:
             QMessageBox.warning(
                 self, "No Actor Data",
@@ -1560,6 +1587,10 @@ class MainWindow(QMainWindow):
                 self, "Ollama Not Available",
                 "Cannot connect to Ollama. Make sure it's running:\n  ollama serve"
             )
+            return
+
+        # First batch: run actor pre-translate + gender dialog
+        if not self._ensure_actors_ready():
             return
 
         self._current_batch_mode = mode

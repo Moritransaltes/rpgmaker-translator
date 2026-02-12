@@ -17,8 +17,16 @@ from PyQt6.QtGui import QPixmap, QColor
 from ..image_translator import (
     ImageTranslator, TextRegion,
     ALL_IMAGE_EXTS, ENCRYPTED_EXTS,
-    read_encryption_key, decrypt_rpgmvp,
+    read_encryption_key, decrypt_rpgmvp, encrypt_to_rpgmvp,
 )
+
+
+def _png_output_name(filename: str) -> str:
+    """Ensure output filename always has .png extension."""
+    root, ext = os.path.splitext(filename)
+    if ext.lower() not in (".png",):
+        return root + ".png"
+    return filename
 
 
 # ── Data ─────────────────────────────────────────────────────────
@@ -89,8 +97,8 @@ class _ImageWorker(QObject):
                 regions = self.translator.translate_regions(regions)
                 entry.regions = regions
 
-                # Render to temp then move
-                rel = os.path.join(entry.subdir, entry.filename)
+                # Render to output (always .png)
+                rel = os.path.join(entry.subdir, _png_output_name(entry.filename))
                 out_path = os.path.join(self.out_base, rel)
                 self.translator.render_translated(entry.path, regions, out_path)
 
@@ -156,10 +164,19 @@ class ImagePanel(QWidget):
         toolbar.addWidget(self.translate_all_btn)
 
         self.export_btn = QPushButton("Export All")
-        self.export_btn.setToolTip("Copy all translated images to img_translated/")
+        self.export_btn.setToolTip("Re-encrypt and copy translated images into the game's img/ folder")
         self.export_btn.clicked.connect(self._export_all)
         self.export_btn.setEnabled(False)
         toolbar.addWidget(self.export_btn)
+
+        self.textmap_btn = QPushButton("Export Text Map")
+        self.textmap_btn.setToolTip(
+            "Save a text file listing all OCR'd regions + translations.\n"
+            "Useful as a reference for manual Photoshop editing."
+        )
+        self.textmap_btn.clicked.connect(self._export_text_map)
+        self.textmap_btn.setEnabled(False)
+        toolbar.addWidget(self.textmap_btn)
 
         toolbar.addWidget(QLabel("Filter:"))
         self.status_filter = QComboBox()
@@ -246,6 +263,12 @@ class ImagePanel(QWidget):
         self.translate_btn.setEnabled(False)
         btn_row.addWidget(self.translate_btn)
 
+        self.retranslate_btn = QPushButton("Retranslate")
+        self.retranslate_btn.setToolTip("Re-run OCR + translate on selected image (resets regions)")
+        self.retranslate_btn.clicked.connect(self._retranslate_selected)
+        self.retranslate_btn.setEnabled(False)
+        btn_row.addWidget(self.retranslate_btn)
+
         self.skip_btn = QPushButton("Skip Selected")
         self.skip_btn.setToolTip("Mark selected images as skipped")
         self.skip_btn.clicked.connect(self._skip_selected)
@@ -304,6 +327,7 @@ class ImagePanel(QWidget):
         self.stats_label.setText(f"{len(subdirs)} folders found")
         self.translate_all_btn.setEnabled(bool(subdirs) and bool(vision_model))
         self.translate_btn.setEnabled(bool(vision_model))
+        self.retranslate_btn.setEnabled(bool(vision_model))
         self.skip_btn.setEnabled(True)
 
     # ── Folder selection ──────────────────────────────────────────
@@ -324,8 +348,8 @@ class ImagePanel(QWidget):
         for fname in sorted(os.listdir(folder)):
             if fname.lower().endswith(ALL_IMAGE_EXTS):
                 path = os.path.join(folder, fname)
-                # Check if already translated
-                out_path = os.path.join(self._out_base, subdir, fname)
+                # Check if already translated (output always .png)
+                out_path = os.path.join(self._out_base, subdir, _png_output_name(fname))
                 entry = ImageEntry(
                     path=path, subdir=subdir, filename=fname,
                     output_path=out_path if os.path.isfile(out_path) else "",
@@ -336,6 +360,7 @@ class ImagePanel(QWidget):
         self._refresh_table()
         self._clear_preview()
         self.export_btn.setEnabled(bool(self._entries))
+        self.textmap_btn.setEnabled(bool(self._entries))
 
     def _refresh_table(self):
         """Rebuild image table with current filter."""
@@ -429,7 +454,13 @@ class ImagePanel(QWidget):
         # Load translated preview if available
         if entry.output_path and os.path.isfile(entry.output_path):
             self._trans_pixmap = QPixmap(entry.output_path)
-            self._scale_preview(self.trans_label, self._trans_pixmap)
+            if self._trans_pixmap.isNull():
+                # File exists but failed to load — mark as needing re-render
+                self._trans_pixmap = None
+                self.trans_label.setPixmap(QPixmap())
+                self.trans_label.setText("Render failed — try Retranslate")
+            else:
+                self._scale_preview(self.trans_label, self._trans_pixmap)
         else:
             self._trans_pixmap = None
             self.trans_label.setPixmap(QPixmap())
@@ -514,8 +545,8 @@ class ImagePanel(QWidget):
         # Update entry regions
         entry.regions = regions
 
-        # Render
-        rel = os.path.join(entry.subdir, entry.filename)
+        # Render (always .png output)
+        rel = os.path.join(entry.subdir, _png_output_name(entry.filename))
         out_path = os.path.join(self._out_base, rel)
         try:
             self._translator.render_translated(entry.path, regions, out_path)
@@ -553,17 +584,35 @@ class ImagePanel(QWidget):
                 indices = [self._selected_idx]
         if not indices or not self._translator:
             return
-        # Only translate pending/error ones
-        indices = [i for i in indices if self._entries[i].status in ("pending", "error")]
+        # Only translate pending/error/no_text ones (no_text = OCR may have missed it)
+        indices = [i for i in indices if self._entries[i].status in ("pending", "error", "no_text")]
         if not indices:
             return
         self._start_worker(indices)
 
+    def _retranslate_selected(self):
+        """Force re-OCR + translate on selected images (ignores current status)."""
+        indices = self._get_selected_indices()
+        if not indices:
+            if self._selected_idx >= 0:
+                indices = [self._selected_idx]
+        if not indices or not self._translator:
+            return
+        # Reset status so the worker processes them
+        for i in indices:
+            self._entries[i].status = "pending"
+            self._entries[i].regions = []
+            self._entries[i].output_path = ""
+        self._refresh_table()
+        self._start_worker(indices)
+
     def _translate_all(self):
-        """Translate all pending images in current folder."""
+        """Translate all pending/failed images in current folder."""
         if not self._translator:
             return
-        indices = [i for i, e in enumerate(self._entries) if e.status == "pending"]
+        # Include "no_text" — OCR may have missed text on first attempt
+        indices = [i for i, e in enumerate(self._entries)
+                   if e.status in ("pending", "no_text", "error")]
         if not indices:
             QMessageBox.information(self, "Nothing to do", "No pending images to translate.")
             return
@@ -633,16 +682,107 @@ class ImagePanel(QWidget):
     # ── Export ─────────────────────────────────────────────────────
 
     def _export_all(self):
-        """Ensure all translated images are in img_translated/."""
-        if not self._entries:
+        """Export translated images into the game's img/ folder.
+
+        For encrypted games (.rpgmvp), re-encrypts the PNG back to .rpgmvp
+        and replaces the original file. For plain PNG games, copies directly.
+        Creates backups on first export (img_original/).
+        """
+        if not self._entries or not self._img_dir:
             return
         translated = [e for e in self._entries if e.status == "translated" and e.output_path]
         if not translated:
             QMessageBox.information(self, "Nothing to export", "No translated images to export.")
             return
+
+        # Create backup directory on first export
+        img_parent = os.path.dirname(self._img_dir)
+        backup_dir = os.path.join(img_parent, "img_original")
+        first_export = not os.path.isdir(backup_dir)
+
+        exported = 0
+        errors = []
+        for entry in translated:
+            try:
+                # Original file in game's img/ folder
+                orig_file = entry.path  # e.g. .../img/system/Command_0.rpgmvp
+                subdir_path = os.path.join(self._img_dir, entry.subdir)
+
+                # Backup original on first export
+                if first_export:
+                    bak_subdir = os.path.join(backup_dir, entry.subdir)
+                    os.makedirs(bak_subdir, exist_ok=True)
+                    bak_file = os.path.join(bak_subdir, entry.filename)
+                    if not os.path.isfile(bak_file):
+                        shutil.copy2(orig_file, bak_file)
+
+                # Export: re-encrypt if original was .rpgmvp, else copy PNG
+                if entry.filename.lower().endswith(ENCRYPTED_EXTS) and self._encryption_key:
+                    # Re-encrypt translated PNG → .rpgmvp in game folder
+                    dest = os.path.join(subdir_path, entry.filename)
+                    encrypt_to_rpgmvp(entry.output_path, dest, self._encryption_key)
+                else:
+                    # Plain image: copy PNG (matching original filename)
+                    dest = os.path.join(subdir_path, _png_output_name(entry.filename))
+                    shutil.copy2(entry.output_path, dest)
+
+                exported += 1
+            except Exception as e:
+                errors.append(f"{entry.filename}: {e}")
+
+        msg = f"Exported {exported} images to game folder."
+        if first_export:
+            msg += f"\nOriginals backed up to: img_original/"
+        if errors:
+            msg += f"\n\n{len(errors)} errors:\n" + "\n".join(errors[:5])
+        QMessageBox.information(self, "Export Complete", msg)
+
+    def _export_text_map(self):
+        """Export a text file mapping every image's OCR regions + translations.
+
+        Useful as a Photoshop reference — lists each image, the bounding box
+        coordinates, the original Japanese text, and the English translation.
+        """
+        entries_with_regions = [
+            e for e in self._entries if e.regions
+        ]
+        if not entries_with_regions:
+            QMessageBox.information(
+                self, "Nothing to export",
+                "No OCR results yet. Translate some images first.",
+            )
+            return
+
+        # Write to img_translated/<subdir>/_text_map.txt
+        subdir = entries_with_regions[0].subdir
+        out_dir = os.path.join(self._out_base, subdir)
+        os.makedirs(out_dir, exist_ok=True)
+        map_path = os.path.join(out_dir, "_text_map.txt")
+
+        lines = []
+        lines.append(f"Image Translation Text Map — {subdir}/")
+        lines.append(f"{'=' * 60}")
+        lines.append("")
+
+        for entry in entries_with_regions:
+            lines.append(f"File: {entry.filename}")
+            lines.append(f"Status: {entry.status}")
+            if not entry.regions:
+                lines.append("  (no regions detected)")
+            for i, region in enumerate(entry.regions):
+                x1, y1, x2, y2 = region.bbox
+                lines.append(f"  Region {i + 1}: bbox=({x1}, {y1}, {x2}, {y2})")
+                lines.append(f"    JP: {region.text}")
+                lines.append(f"    EN: {region.translation}")
+            lines.append("")
+
+        with open(map_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
         QMessageBox.information(
-            self, "Export Complete",
-            f"{len(translated)} translated images are in:\n{self._out_base}",
+            self, "Text Map Exported",
+            f"Saved {len(entries_with_regions)} images to:\n{map_path}\n\n"
+            "Use this file as a reference for manual image editing.",
         )
 
     # ── Cleanup ───────────────────────────────────────────────────
