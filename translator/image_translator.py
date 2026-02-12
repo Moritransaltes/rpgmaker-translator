@@ -586,28 +586,19 @@ class ImageTranslator:
             return False, []
 
         half_y = img_h // 2
-        tolerance = img_h * 0.15  # allow 15% fuziness around the midpoint
 
-        top_regions = []
-        bot_regions = []
+        top_only = []
+        bot_only = []
         for r in regions:
             cy = (r.bbox[1] + r.bbox[3]) // 2  # vertical center of region
-            if cy < half_y + tolerance:
-                top_regions.append(r)
-            if cy > half_y - tolerance:
-                bot_regions.append(r)
-
-        if not top_regions or not bot_regions:
-            return False, []
+            if cy < half_y:
+                top_only.append(r)
+            else:
+                bot_only.append(r)
 
         # Sort by vertical position
-        top_regions.sort(key=lambda r: r.bbox[1])
-        bot_regions.sort(key=lambda r: r.bbox[1])
-
-        # Check if top and bottom have the same number of text regions
-        # and the same Japanese text (or same translation for already-translated)
-        top_only = [r for r in top_regions if ((r.bbox[1] + r.bbox[3]) // 2) < half_y]
-        bot_only = [r for r in bot_regions if ((r.bbox[1] + r.bbox[3]) // 2) >= half_y]
+        top_only.sort(key=lambda r: r.bbox[1])
+        bot_only.sort(key=lambda r: r.bbox[1])
 
         if len(top_only) != len(bot_only) or len(top_only) == 0:
             return False, []

@@ -662,6 +662,7 @@ class ImagePanel(QWidget):
         self.translate_btn.setEnabled(True)
         if self._thread:
             self._thread.quit()
+            self._thread.wait(5000)
         self._refresh_table()
 
     def _on_thread_finished(self):

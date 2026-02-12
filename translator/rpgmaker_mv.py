@@ -5,12 +5,15 @@ and writing translations back into the original JSON structure.
 """
 
 import json
+import logging
 import os
 import re
 import shutil
 import zipfile
 from collections import deque
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 from .project_model import TranslationEntry
 
@@ -1041,8 +1044,8 @@ class RPGMakerMVParser:
 
         try:
             self._apply_translation_inner(data, entry, parts, filename)
-        except (ValueError, IndexError, KeyError):
-            pass  # Malformed entry ID — skip silently rather than crash export
+        except (ValueError, IndexError, KeyError) as exc:
+            log.warning("Export skip — malformed entry ID %r: %s", entry.id, exc)
 
     def _apply_translation_inner(self, data, entry, parts, filename):
         """Inner logic for _apply_translation (split out for safe int parsing)."""
@@ -1181,13 +1184,16 @@ class RPGMakerMVParser:
                             return
             # Common event data
             if "list" in data:
-                process_commands(data.get("list", []))
+                if process_commands(data.get("list", [])):
+                    return
         elif isinstance(data, list):
             # CommonEvents.json is a list
             for event in data:
                 if event and isinstance(event, dict):
                     if process_commands(event.get("list", [])):
                         return
+        log.warning("Export: dialog block not found — original starts with %r",
+                    original_lines[0][:60] if original_lines else "?")
 
     def _replace_in_commands(self, data, code: int, original: str, translation: str, is_choice: bool = False):
         """Replace a specific command parameter in event command lists."""
@@ -1218,6 +1224,8 @@ class RPGMakerMVParser:
                 if event and isinstance(event, dict):
                     if process_commands(event.get("list", [])):
                         return
+        log.warning("Export: command code %d not matched — original %r",
+                    code, original[:60])
 
     def _replace_single_param(self, data, code: int, param_idx: int,
                               original: str, translation: str):
@@ -1241,12 +1249,15 @@ class RPGMakerMVParser:
                         if process_commands(page.get("list", [])):
                             return
             if "list" in data:
-                process_commands(data.get("list", []))
+                if process_commands(data.get("list", [])):
+                    return
         elif isinstance(data, list):
             for event in data:
                 if event and isinstance(event, dict):
                     if process_commands(event.get("list", [])):
                         return
+        log.warning("Export: single param code %d[%d] not matched — original %r",
+                    code, param_idx, original[:60])
 
     def _replace_mz_plugin_param(self, data, plugin_name: str, param_key: str,
                                    original: str, translation: str):
@@ -1287,12 +1298,15 @@ class RPGMakerMVParser:
                         if process_commands(page.get("list", [])):
                             return
             if "list" in data:
-                process_commands(data.get("list", []))
+                if process_commands(data.get("list", [])):
+                    return
         elif isinstance(data, list):
             for event in data:
                 if event and isinstance(event, dict):
                     if process_commands(event.get("list", [])):
                         return
+        log.warning("Export: MZ plugin %s/%s not matched — original %r",
+                    plugin_name, param_key, original[:60])
 
     # ── plugins.js extraction & export ─────────────────────────────
 
@@ -1420,7 +1434,8 @@ class RPGMakerMVParser:
         source_path = backup_path if os.path.exists(backup_path) else plugins_path
         try:
             plugins = self._load_plugins_js(source_path)
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("Export: failed to load plugins.js from %s: %s", source_path, exc)
             return
 
         # Build lookup: plugin_name → {param_key → plugin_dict}
