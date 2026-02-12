@@ -396,7 +396,9 @@ class RPGMakerMVParser:
         """
         data_dir = self._find_data_dir(project_dir)
         if not data_dir:
-            raise FileNotFoundError("Could not find data directory in project")
+            raise FileNotFoundError(
+                f"Could not find data/ directory in:\n{project_dir}"
+            )
 
         # Use backup (original JP) as source, same as save_project
         backup_dir = data_dir + "_original"

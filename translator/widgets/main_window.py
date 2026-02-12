@@ -2399,7 +2399,26 @@ class MainWindow(QMainWindow):
 
     def _export_patch_zip(self):
         """Export translated game files + install.bat as a distributable zip."""
-        if not self.project.entries or not self.project.project_path:
+        if not self.project.entries:
+            return
+        if not self.project.project_path or not os.path.isdir(self.project.project_path):
+            QMessageBox.warning(
+                self, "Project Folder Not Found",
+                f"The project folder no longer exists:\n"
+                f"{self.project.project_path or '(not set)'}\n\n"
+                "Open the game project first, then try again."
+            )
+            return
+        data_dir = self.parser._find_data_dir(self.project.project_path)
+        if not data_dir:
+            QMessageBox.warning(
+                self, "Data Directory Not Found",
+                f"Could not find a data/ folder in:\n"
+                f"{self.project.project_path}\n\n"
+                "The patch zip needs the original game files to produce\n"
+                "translated JSON files.\n\n"
+                "Make sure the game's data/ directory exists in this folder."
+            )
             return
 
         translated = [e for e in self.project.entries
