@@ -1054,6 +1054,11 @@ class MainWindow(QMainWindow):
 
         self.file_tree.load_project(self.project)
         self.trans_table.set_entries(self.project.entries)
+
+        # Check for vocab.txt in project folder
+        if self.project.project_path:
+            self._check_vocab_file(self.project.project_path)
+
         self._rebuild_glossary()
 
         # Restore actor context from saved genders (skip dialog on next batch)
