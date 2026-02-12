@@ -2137,7 +2137,16 @@ class MainWindow(QMainWindow):
         )[:50].strip()
         if not safe_title:
             safe_title = os.path.basename(self.project.project_path)
-        default_name = f"{safe_title} ENG Translation Patch.zip"
+
+        # Detect RJ/RE/VJ number from folder name (DLsite product ID)
+        folder = os.path.basename(self.project.project_path)
+        rj_match = re.search(r'((?:RJ|RE|VJ)\d+)', folder, re.IGNORECASE)
+        rj_prefix = rj_match.group(1).upper() if rj_match else ""
+
+        if rj_prefix and rj_prefix not in safe_title.upper():
+            default_name = f"{rj_prefix} - {safe_title} - ENG Translation Patch.zip"
+        else:
+            default_name = f"{safe_title} - ENG Translation Patch.zip"
 
         path, _ = QFileDialog.getSaveFileName(
             self, "Export Patch Zip", default_name, "Zip Files (*.zip)"
