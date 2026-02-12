@@ -512,6 +512,18 @@ class MainWindow(QMainWindow):
         self.export_zip_action.setEnabled(False)
         game_menu.addAction(self.export_zip_action)
 
+        self.export_folder_zip_action = QAction(
+            "Create Patch from Game Folder...", self
+        )
+        self.export_folder_zip_action.setToolTip(
+            "Package a game folder's current data/ files into a zip \u2014 "
+            "works without a project, includes all existing translations"
+        )
+        self.export_folder_zip_action.triggered.connect(
+            self._export_game_as_patch
+        )
+        game_menu.addAction(self.export_folder_zip_action)
+
         # ── Settings (top-level action) ───────────────────────────
         self.settings_action = QAction("Settings", self)
         self.settings_action.triggered.connect(self._open_settings)
@@ -3570,6 +3582,101 @@ class MainWindow(QMainWindow):
             )
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to create patch zip:\n{e}")
+
+    def _export_game_as_patch(self):
+        """Package a game folder's current files into a distributable zip.
+
+        Works without an active project.  Useful when the game already has
+        translations applied (e.g. from a previous patch) and you want to
+        create a redistributable install package from the current state.
+        """
+        # Default to current project folder if one is loaded
+        default_dir = ""
+        if (self.project and self.project.project_path
+                and os.path.isdir(self.project.project_path)):
+            default_dir = self.project.project_path
+
+        game_path = QFileDialog.getExistingDirectory(
+            self, "Select Game Folder (containing data/ and Game.exe)",
+            default_dir
+        )
+        if not game_path:
+            return
+
+        # Validate data folder exists
+        data_dir = self.parser._find_data_dir(game_path)
+        if not data_dir:
+            QMessageBox.warning(
+                self, "Data Directory Not Found",
+                f"Could not find a data/ folder in:\n{game_path}\n\n"
+                "Select the game folder that contains the data/ directory."
+            )
+            return
+
+        # Warn if no backup exists (might be packaging untranslated files)
+        backup_dir = data_dir + "_original"
+        if not os.path.isdir(backup_dir):
+            reply = QMessageBox.question(
+                self, "No Original Backup Found",
+                f"No backup folder found at:\n{backup_dir}\n\n"
+                "This means the data/ folder may still contain untranslated "
+                "Japanese files, or originals were never backed up.\n\n"
+                "Package the current data/ files anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        # Get game title from System.json
+        game_title = self.parser.get_game_title(game_path)
+
+        # Build default filename
+        safe_title = "".join(
+            c for c in game_title if c.isalnum() or c in " _-"
+        )[:50].strip()
+        if not safe_title:
+            safe_title = os.path.basename(game_path)
+
+        folder = os.path.basename(game_path)
+        rj_match = re.search(r'((?:RJ|RE|VJ)\d+)', folder, re.IGNORECASE)
+        rj_prefix = rj_match.group(1).upper() if rj_match else ""
+
+        if rj_prefix and rj_prefix not in safe_title.upper():
+            default_name = f"{rj_prefix} - {safe_title} - ENG Translation Patch.zip"
+        else:
+            default_name = f"{safe_title} - ENG Translation Patch.zip"
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Patch Zip", default_name, "Zip Files (*.zip)"
+        )
+        if not path:
+            return
+
+        try:
+            stats = self.parser.export_game_folder_as_patch(
+                game_path, path, game_title=game_title
+            )
+            msg = (
+                f"Saved to:\n{path}\n\n"
+                f"{stats['data_files']} data file(s) packaged"
+            )
+            if stats['has_plugins']:
+                msg += " + plugins.js"
+            msg += ".\n"
+            if stats['data_original_exists']:
+                msg += (
+                    "\ndata_original/ detected \u2014 data/ contains "
+                    "translated files (as expected)."
+                )
+            msg += (
+                "\n\nEnd users: extract into the game folder and run install.bat."
+            )
+            QMessageBox.information(self, "Patch Created", msg)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Error", f"Failed to create patch zip:\n{e}"
+            )
 
     # ── Re-translate with diff ─────────────────────────────────────
 

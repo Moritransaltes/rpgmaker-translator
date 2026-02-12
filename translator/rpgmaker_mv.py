@@ -571,6 +571,86 @@ class RPGMakerMVParser:
             )
             zf.writestr("README.txt", readme)
 
+    def export_game_folder_as_patch(self, game_path: str, zip_path: str,
+                                    game_title: str = "") -> dict:
+        """Package a game folder's current data/ files into a distributable zip.
+
+        Unlike export_patch_zip(), this does NOT apply translations from a
+        project.  It takes the current state of data/ (and optionally
+        js/plugins.js) and packages them as-is.  Useful when the game
+        already has translations baked in from a previous patch.
+        """
+        data_dir = self._find_data_dir(game_path)
+        if not data_dir:
+            raise FileNotFoundError(
+                f"Could not find data/ directory in:\n{game_path}"
+            )
+
+        backup_dir = data_dir + "_original"
+        data_original_exists = os.path.isdir(backup_dir)
+
+        # Relative path from game root to data dir (e.g. "data" or "www/data")
+        data_rel = os.path.relpath(data_dir, game_path).replace("\\", "/")
+
+        # Detect plugins.js
+        js_rel = None
+        plugins_path = self._find_plugins_file(game_path)
+        if plugins_path:
+            js_rel = os.path.relpath(
+                os.path.dirname(plugins_path), game_path
+            ).replace("\\", "/")
+
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            # Copy all JSON files from data/ directly into zip
+            data_file_count = 0
+            for filename in sorted(os.listdir(data_dir)):
+                src = os.path.join(data_dir, filename)
+                if not os.path.isfile(src):
+                    continue
+                if not filename.lower().endswith(".json"):
+                    continue
+                with open(src, "r", encoding="utf-8") as f:
+                    content = f.read()
+                zf.writestr(f"_translation/{data_rel}/{filename}", content)
+                data_file_count += 1
+
+            # Copy plugins.js if present
+            has_plugins = False
+            if plugins_path and os.path.isfile(plugins_path):
+                with open(plugins_path, "r", encoding="utf-8") as f:
+                    plugins_content = f.read()
+                zf.writestr(f"_translation/{js_rel}/plugins.js", plugins_content)
+                has_plugins = True
+
+            # Install / uninstall scripts (reuse existing builders)
+            zf.writestr("install.bat", self._build_install_bat(
+                data_rel, js_rel, data_file_count, has_plugins, game_title,
+                inject_wordwrap=False))
+            zf.writestr("uninstall.bat", self._build_uninstall_bat(
+                data_rel, js_rel, has_plugins, game_title,
+                inject_wordwrap=False))
+
+            readme = (
+                f"English Translation \u2014 {game_title or 'RPG Maker Game'}\n"
+                f"{'=' * 50}\n\n"
+                f"Files: {data_file_count} data file(s)"
+                f"{' + plugins.js' if has_plugins else ''}\n\n"
+                "HOW TO INSTALL:\n"
+                "1. Extract this zip into the game folder\n"
+                "   (the folder containing Game.exe)\n"
+                "2. Run install.bat\n"
+                "3. Play the game!\n\n"
+                "TO REVERT TO JAPANESE:\n"
+                "  Run uninstall.bat\n"
+            )
+            zf.writestr("README.txt", readme)
+
+        return {
+            "data_files": data_file_count,
+            "has_plugins": has_plugins,
+            "data_original_exists": data_original_exists,
+        }
+
     @staticmethod
     def _build_install_bat(data_rel: str, js_rel: str,
                            n_files: int, has_plugins: bool,
