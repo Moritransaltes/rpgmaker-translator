@@ -378,8 +378,7 @@ class RPGMakerMVParser:
             with open(source_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            for entry in file_entries:
-                self._apply_translation(data, entry)
+            self._apply_translations_fast(data, file_entries)
 
             # Always write to the live data/ directory
             out_path = os.path.join(data_dir, filename)
@@ -444,8 +443,7 @@ class RPGMakerMVParser:
                     continue
                 with open(source_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                for entry in file_entries:
-                    self._apply_translation(data, entry)
+                self._apply_translations_fast(data, file_entries)
                 arc_path = f"_translation/{data_rel}/{filename}"
                 zf.writestr(arc_path,
                             json.dumps(data, ensure_ascii=False, indent=2))
@@ -1099,6 +1097,160 @@ class RPGMakerMVParser:
         return entries
 
     # ── Private: apply translation back to JSON ────────────────────────
+
+    def _apply_translations_fast(self, data, entries: list):
+        """Apply all translations for a file in a single pass.
+
+        DB / System / displayName / plugin entries use direct indexed lookup
+        (fast, O(1) per entry).  Dialog / scroll / choice entries are batched
+        and applied in one walk of the event command lists — O(commands)
+        instead of O(entries × commands).
+        """
+        from collections import deque
+
+        scan_entries = []
+        for entry in entries:
+            if entry.field in ("dialog", "scroll_text", "choice"):
+                scan_entries.append(entry)
+            else:
+                # DB / System / plugin entries — already O(1)
+                self._apply_translation(data, entry)
+
+        if not scan_entries:
+            return
+
+        # Build lookup dicts keyed by first original line
+        dialog_lookup = {}   # first_line -> deque of (orig_lines, trans_lines)
+        scroll_lookup = {}
+        choice_lookup = {}   # original_text -> deque of translation_text
+
+        for entry in scan_entries:
+            orig_lines = entry.original.split("\n")
+            trans_lines = entry.translation.split("\n")
+            if entry.field in ("dialog", "scroll_text"):
+                while len(trans_lines) < len(orig_lines):
+                    trans_lines.append("")
+                trans_lines = trans_lines[:len(orig_lines)]
+                first = orig_lines[0] if orig_lines else ""
+                lookup = dialog_lookup if entry.field == "dialog" else scroll_lookup
+                lookup.setdefault(first, deque()).append(
+                    (orig_lines, trans_lines))
+            elif entry.field == "choice":
+                choice_lookup.setdefault(entry.original, deque()).append(
+                    entry.translation)
+
+        code_dialog = CODE_SHOW_TEXT
+        code_scroll = CODE_SCROLL_TEXT
+        code_choice = CODE_SHOW_CHOICES
+
+        def process_commands(cmd_list):
+            i = 0
+            while i < len(cmd_list):
+                cmd = cmd_list[i]
+                if not isinstance(cmd, dict):
+                    i += 1
+                    continue
+                code = cmd.get("code", 0)
+
+                # Dialog block (401)
+                if code == code_dialog and dialog_lookup:
+                    first_text = str(
+                        (cmd.get("parameters") or [""])[0])
+                    candidates = dialog_lookup.get(first_text)
+                    if candidates:
+                        applied = False
+                        for idx, (ol, tl) in enumerate(candidates):
+                            if i + len(ol) > len(cmd_list):
+                                continue
+                            match = True
+                            for j, orig_line in enumerate(ol):
+                                c = cmd_list[i + j]
+                                if (not isinstance(c, dict)
+                                        or c.get("code") != code_dialog):
+                                    match = False
+                                    break
+                                ct = str((c.get("parameters") or [""])[0])
+                                if ct != orig_line:
+                                    match = False
+                                    break
+                            if match:
+                                for j, t in enumerate(tl):
+                                    cmd_list[i + j]["parameters"][0] = t
+                                del candidates[idx]
+                                if not candidates:
+                                    del dialog_lookup[first_text]
+                                i += len(ol)
+                                applied = True
+                                break
+                        if not applied:
+                            i += 1
+                    else:
+                        i += 1
+
+                # Scroll text block (405)
+                elif code == code_scroll and scroll_lookup:
+                    first_text = str(
+                        (cmd.get("parameters") or [""])[0])
+                    candidates = scroll_lookup.get(first_text)
+                    if candidates:
+                        applied = False
+                        for idx, (ol, tl) in enumerate(candidates):
+                            if i + len(ol) > len(cmd_list):
+                                continue
+                            match = True
+                            for j, orig_line in enumerate(ol):
+                                c = cmd_list[i + j]
+                                if (not isinstance(c, dict)
+                                        or c.get("code") != code_scroll):
+                                    match = False
+                                    break
+                                ct = str((c.get("parameters") or [""])[0])
+                                if ct != orig_line:
+                                    match = False
+                                    break
+                            if match:
+                                for j, t in enumerate(tl):
+                                    cmd_list[i + j]["parameters"][0] = t
+                                del candidates[idx]
+                                if not candidates:
+                                    del scroll_lookup[first_text]
+                                i += len(ol)
+                                applied = True
+                                break
+                        if not applied:
+                            i += 1
+                    else:
+                        i += 1
+
+                # Choices (102)
+                elif code == code_choice and choice_lookup:
+                    params = cmd.get("parameters", [])
+                    if params and isinstance(params[0], list):
+                        for ci, ch in enumerate(params[0]):
+                            if isinstance(ch, str) and ch in choice_lookup:
+                                q = choice_lookup[ch]
+                                params[0][ci] = q.popleft()
+                                if not q:
+                                    del choice_lookup[ch]
+                    i += 1
+
+                else:
+                    i += 1
+
+        # Walk all events / pages
+        if isinstance(data, dict):
+            for event in (data.get("events") or []):
+                if not event or not isinstance(event, dict):
+                    continue
+                for page in (event.get("pages") or []):
+                    if page and isinstance(page, dict):
+                        process_commands(page.get("list", []))
+            if "list" in data:
+                process_commands(data.get("list", []))
+        elif isinstance(data, list):
+            for event in data:
+                if event and isinstance(event, dict):
+                    process_commands(event.get("list", []))
 
     def _apply_translation(self, data, entry: TranslationEntry):
         """Apply a single translation back into the loaded JSON data."""
