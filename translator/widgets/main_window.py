@@ -819,7 +819,7 @@ class MainWindow(QMainWindow):
         self._actors_ready = True
         return True
 
-    def _backfill_db_glossary(self):
+    def _backfill_db_glossary(self) -> int:
         """Add DB name glossary entries from already-translated entries.
 
         Scans translated name fields from all database files (Actors, Items,
@@ -828,11 +828,15 @@ class MainWindow(QMainWindow):
 
         Called on load_state to handle projects saved before auto-glossary
         covered all DB types (or before this feature existed at all).
+
+        Returns the number of entries added.
         """
         if not self.project:
-            return
+            return 0
+        before = len(self.project.glossary)
         for entry in self.project.entries:
             self._maybe_add_to_glossary(entry)
+        return len(self.project.glossary) - before
 
     def _title_case(self, text: str) -> str:
         """Title-case text, keeping prepositions/articles lowercase.
@@ -1319,23 +1323,25 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return False
 
-        # Replace project glossary with vocab terms
+        # Replace project glossary: vocab first, then backfill project terms
         self.project.glossary.clear()
         for jp, en in glossary.items():
             self.project.glossary[jp] = en
+        # Re-add auto-glossary from already-translated DB entries on top
+        backfilled = self._backfill_db_glossary()
 
         # Store gender info for actor detection
         if genders:
+            if not hasattr(self, "_vocab_genders"):
+                self._vocab_genders = {}
             for jp_name, gender in genders.items():
                 en_name = glossary.get(jp_name, jp_name)
-                # Will be used when actor gender dialog opens
-                if not hasattr(self, "_vocab_genders"):
-                    self._vocab_genders = {}
                 self._vocab_genders[jp_name] = gender
                 self._vocab_genders[en_name] = gender
 
         self.statusbar.showMessage(
-            f"Replaced project glossary with {len(glossary)} vocab terms"
+            f"Loaded {len(glossary)} vocab terms"
+            + (f" + {backfilled} project terms" if backfilled else "")
             + (f" + {len(genders)} genders" if genders else ""),
             5000,
         )
