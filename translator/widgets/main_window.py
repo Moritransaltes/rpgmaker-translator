@@ -567,8 +567,11 @@ class MainWindow(QMainWindow):
         # Defer actor gender dialog + pre-translate to first batch start
         self._actors_ready = False
 
-        # Offer to load default glossary terms into the general glossary
-        if not self._general_glossary:
+        # Check for vocab.txt first — if found and accepted, skip default glossary
+        vocab_loaded = self._check_vocab_file(path)
+
+        # Offer default glossary only if no vocab.txt was loaded
+        if not vocab_loaded and not self._general_glossary:
             from ..default_glossary import get_all_defaults
             reply = QMessageBox.question(
                 self, "Load Default Glossary?",
@@ -582,9 +585,6 @@ class MainWindow(QMainWindow):
             if reply == QMessageBox.StandardButton.Yes:
                 self._general_glossary.update(get_all_defaults())
                 self._save_settings()
-
-        # Check for vocab.txt in project folder
-        self._check_vocab_file(path)
 
         # Rebuild merged glossary (general + project auto-glossary entries)
         self._rebuild_glossary()
@@ -1286,8 +1286,12 @@ class MainWindow(QMainWindow):
                         genders[jp] = gender.lower()
         return glossary, genders
 
-    def _check_vocab_file(self, project_path: str):
-        """Auto-detect vocab.txt in project folder and offer to import."""
+    def _check_vocab_file(self, project_path: str) -> bool:
+        """Auto-detect vocab.txt in project folder and offer to import.
+
+        Returns True if vocab was found and the user accepted (so caller
+        can skip the default glossary prompt).
+        """
         vocab_path = None
         for name in self._VOCAB_FILENAMES:
             candidate = os.path.join(project_path, name)
@@ -1295,25 +1299,25 @@ class MainWindow(QMainWindow):
                 vocab_path = candidate
                 break
         if not vocab_path:
-            return
+            return False
 
         try:
             glossary, genders = self._parse_vocab_file(vocab_path)
         except (OSError, UnicodeDecodeError):
-            return
+            return False
 
         if not glossary:
-            return
+            return False
 
         reply = QMessageBox.question(
             self, "Vocab File Detected",
             f"Found {os.path.basename(vocab_path)} with {len(glossary)} terms"
             + (f" and {len(genders)} character genders" if genders else "")
-            + ".\n\nLoad into project glossary?",
+            + ".\n\nLoad into project glossary instead of default glossary?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
-            return
+            return False
 
         added = 0
         for jp, en in glossary.items():
@@ -1336,6 +1340,7 @@ class MainWindow(QMainWindow):
             + (f" + {len(genders)} genders" if genders else ""),
             5000,
         )
+        return True
 
     def _load_vocab_file(self):
         """Manually load a vocab.txt file."""
