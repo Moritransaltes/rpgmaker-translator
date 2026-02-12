@@ -1,6 +1,16 @@
-# RPG Maker Translator — Local LLM
+<p align="center">
+  <img src="logo.png" alt="RPG Maker Translator" width="400">
+</p>
 
-A desktop tool for translating RPG Maker MV/MZ games using a local LLM — no cloud API, no API keys, no per-token costs. Runs entirely on your machine with Ollama. Architected and built in 3 days — designed by a human, coded with [Claude Code](https://claude.ai/code).
+<h1 align="center">RPG Maker Translator — Local LLM</h1>
+
+<p align="center">
+A desktop tool for translating RPG Maker MV/MZ games using a local LLM — no cloud API, no API keys, no per-token costs. Runs entirely on your machine with Ollama. Architected and built in 3 days — designed by a human, coded with <a href="https://claude.ai/code">Claude Code</a>.
+</p>
+
+<p align="center">
+  <a href="https://ko-fi.com/moritranslates"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support on Ko-fi"></a>
+</p>
 
 **24 target languages** | **Pronoun-aware gender system** | **Two-layer glossary** | **Batch translation with ETA** | **Auto-save & resume** | **Dark mode**
 
