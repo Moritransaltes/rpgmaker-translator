@@ -47,6 +47,85 @@ def _has_japanese(text: str) -> bool:
     return bool(JP_REGEX.search(text))
 
 
+# ── Plugin command whitelists (based on DazedMTL's proven approach) ──
+# Only these known plugins/commands have display text safe to translate.
+# Everything else is internal identifiers that break games if translated.
+
+# MZ plugin commands (code 357): plugin name → list of safe param keys.
+# params[0]=pluginName, params[1]=commandName, params[3]=JSON args dict.
+_MZ_PLUGIN_COMMAND_WHITELIST: dict[str, list[str]] = {
+    "LL_InfoPopupWIndow": ["messageText"],
+    "QuestSystem": ["DetailNote"],
+    "BalloonInBattle": ["text"],
+    "MNKR_CommonPopupCoreMZ": ["text"],
+    "DestinationWindow": ["destination"],
+    "_TMLogWindowMZ": ["text"],
+    "TorigoyaMZ_NotifyMessage": ["message"],
+    "SoR_GabWindow": ["arg1"],
+    "DarkPlasma_CharacterText": ["text"],
+    "DTextPicture": ["text"],
+    "TextPicture": ["text"],
+    "LogWindow": ["text"],
+    "BattleLogOutput": ["message"],
+    "TorigoyaMZ_NotifyMessage_CommandMessage": ["message"],
+    "NUUN_SaveScreen": ["AnyName"],
+    "build/ARPG_Core": ["Text", "SkillByName"],
+}
+
+# MV plugin commands (code 356): (prefix, compiled_regex) tuples.
+# prefix is checked via startswith() for fast filtering.
+# regex capture group 1 = the translatable text portion.
+_MV_PLUGIN_COMMAND_WHITELIST: list[tuple[str, re.Pattern]] = [
+    ("D_TEXT",
+     re.compile(r"D_TEXT\s+([^\s]+)\s?\d*")),
+    ("Tachie showName",
+     re.compile(r"Tachie showName (.+)")),
+    ("ShowInfo",
+     re.compile(r"ShowInfo\s(.*)")),
+    ("PushGab",
+     re.compile(r"PushGab\s(.*)")),
+    ("addLog",
+     re.compile(r"addLog\s(.*)")),
+    ("DW_",
+     re.compile(r"DW_.*\s\d+\s(.+)")),
+    ("CommonPopup",
+     re.compile(r"CommonPopup\sadd\stext:(.*?)\\}")),
+    ("AddCustomChoice",
+     re.compile(r"AddCustomChoice\s\d+\s(.+)\s\d")),
+    ("namePop",
+     re.compile(r"<namePop:\s*([^>]+)>")),
+    ("namePop",
+     re.compile(r"\bnamePop\b\s*(?:-?\d+)?\s*([^\r\n<>]+)")),
+    ("LL_InfoPopupWIndowMV",
+     re.compile(r"LL_InfoPopupWIndowMV\sshowWindow\s(.+?) .+")),
+    ("OriginMenuStatus SetParam",
+     re.compile(r"OriginMenuStatus\sSetParam\sparam[\d]\s(.*)")),
+    ("LL_GalgeChoiceWindowMV setMessageText",
+     re.compile(r"LL_GalgeChoiceWindowMV setMessageText (.+)")),
+    ("LL_GalgeChoiceWindowMV setChoices",
+     re.compile(r"LL_GalgeChoiceWindowMV setChoices (.+)")),
+]
+
+
+def _substitute_mv_plugin_command(full_cmd: str, original_text: str,
+                                   translation: str) -> str:
+    """Substitute translated text back into an MV plugin command string.
+
+    Uses the whitelist regex to find the original text within the full
+    command and replaces it with the translation, preserving command
+    structure (prefix, numeric args, etc.).
+    """
+    for cmd_prefix, cmd_pattern in _MV_PLUGIN_COMMAND_WHITELIST:
+        if not full_cmd.startswith(cmd_prefix):
+            continue
+        m = cmd_pattern.search(full_cmd)
+        if m and m.group(1) == original_text:
+            start, end = m.span(1)
+            return full_cmd[:start] + translation + full_cmd[end:]
+    # Fallback: direct substring replacement
+    return full_cmd.replace(original_text, translation, 1)
+
+
 # Patterns that indicate a plugin param is NOT display text
 _PLUGIN_TAG_RE = re.compile(r'^<[^>]+>$')  # <選択肢ヘルプ> — plugin tag
 _ASSET_ID_RE = re.compile(r'^[^\s]*_[^\s]*$')  # 立ち絵_通常 — asset filename (no spaces, has _)
@@ -904,35 +983,50 @@ class RPGMakerMVParser:
                         original=text,
                     ))
 
-            # Plugin Command MV (356) — single string parameter
-            # Default to skipped: these are internal command identifiers that
-            # plugins match by exact string.  Translating them breaks the plugin.
+            # Plugin Command MV (356) — whitelist-based extraction.
+            # Only extract text from known plugin commands via regex.
+            # Full command stored in context for export reconstruction.
             if code == CODE_PLUGIN_COMMAND_MV and params:
-                text = params[0] if isinstance(params[0], str) else ""
-                if _is_translatable(text):
-                    dialog_counter += 1
-                    entries.append(TranslationEntry(
-                        id=f"{filename}/{prefix}/plugin_mv_{dialog_counter}",
-                        file=filename,
-                        field="plugin_command",
-                        original=text,
-                        status="skipped",
-                    ))
+                cmd_str = params[0] if isinstance(params[0], str) else ""
+                if cmd_str:
+                    for cmd_prefix, cmd_pattern in _MV_PLUGIN_COMMAND_WHITELIST:
+                        if not cmd_str.startswith(cmd_prefix):
+                            continue
+                        m = cmd_pattern.search(cmd_str)
+                        if m and m.group(1) and _has_japanese(m.group(1)):
+                            dialog_counter += 1
+                            entries.append(TranslationEntry(
+                                id=f"{filename}/{prefix}/plugin_mv_{dialog_counter}",
+                                file=filename,
+                                field="plugin_command",
+                                original=m.group(1),
+                                context=f"[PLUGIN_CMD:{cmd_str}]",
+                            ))
+                            break  # first matching pattern wins
 
-            # Plugin Command MZ (357) — params[3+] may contain translatable text
-            # Default to skipped: same reason as MV plugin commands.
+            # Plugin Command MZ (357) — whitelist-based extraction.
+            # Only extract specific param keys from known plugins.
             if code == CODE_PLUGIN_COMMAND_MZ and len(params) >= 4:
-                for pi in range(3, len(params)):
-                    text = params[pi] if isinstance(params[pi], str) else ""
-                    if _is_translatable(text):
-                        dialog_counter += 1
-                        entries.append(TranslationEntry(
-                            id=f"{filename}/{prefix}/plugin_mz_{dialog_counter}_p{pi}",
-                            file=filename,
-                            field="plugin_command",
-                            original=text,
-                            status="skipped",
-                        ))
+                plugin_name = params[0] if isinstance(params[0], str) else ""
+                allowed_keys = _MZ_PLUGIN_COMMAND_WHITELIST.get(plugin_name)
+                if allowed_keys:
+                    arg_str = params[3] if isinstance(params[3], str) else ""
+                    if arg_str:
+                        try:
+                            arg_dict = json.loads(arg_str)
+                        except (json.JSONDecodeError, ValueError):
+                            arg_dict = {}
+                        if isinstance(arg_dict, dict):
+                            for key in allowed_keys:
+                                val = arg_dict.get(key, "")
+                                if isinstance(val, str) and _has_japanese(val):
+                                    dialog_counter += 1
+                                    entries.append(TranslationEntry(
+                                        id=f"{filename}/{prefix}/plugin_mz_{dialog_counter}/{plugin_name}/{key}",
+                                        file=filename,
+                                        field="plugin_command",
+                                        original=val,
+                                    ))
 
             i += 1
 
@@ -993,17 +1087,35 @@ class RPGMakerMVParser:
             code_map = {"name": CODE_CHANGE_NAME, "nickname": CODE_CHANGE_NICKNAME, "profile": CODE_CHANGE_PROFILE}
             self._replace_single_param(data, code_map[entry.field], 1, entry.original, entry.translation)
 
-        # Plugin Command MV (356)
+        # Plugin Command MV (356) — whitelist regex-based substitution
         elif entry.field == "plugin_command" and "/plugin_mv_" in entry.id:
-            self._replace_single_param(data, CODE_PLUGIN_COMMAND_MV, 0, entry.original, entry.translation)
+            if entry.context and entry.context.startswith("[PLUGIN_CMD:"):
+                # New whitelist format: context has full command, original is extracted text
+                full_cmd = entry.context[len("[PLUGIN_CMD:"):-1]
+                new_cmd = _substitute_mv_plugin_command(full_cmd, entry.original, entry.translation)
+                if new_cmd:
+                    self._replace_single_param(data, CODE_PLUGIN_COMMAND_MV, 0, full_cmd, new_cmd)
+            else:
+                # Legacy format: original is the full command string
+                self._replace_single_param(data, CODE_PLUGIN_COMMAND_MV, 0,
+                                           entry.original, entry.translation)
 
-        # Plugin Command MZ (357)
+        # Plugin Command MZ (357) — whitelist-based parameter substitution
         elif entry.field == "plugin_command" and "/plugin_mz_" in entry.id:
-            # Extract param index from entry ID: plugin_mz_N_pX
             parts_id = entry.id.split("/")
-            last_part = parts_id[-1]  # e.g. "plugin_mz_5_p3"
-            pi = int(last_part.rsplit("_p", 1)[-1]) if "_p" in last_part else 3
-            self._replace_single_param(data, CODE_PLUGIN_COMMAND_MZ, pi, entry.original, entry.translation)
+            # Detect format: new has .../pluginName/paramKey, legacy has _pX suffix
+            last_part = parts_id[-1]
+            if "_p" in last_part and last_part.startswith("plugin_mz_"):
+                # Legacy format: plugin_mz_N_pX
+                pi = int(last_part.rsplit("_p", 1)[-1])
+                self._replace_single_param(data, CODE_PLUGIN_COMMAND_MZ, pi,
+                                           entry.original, entry.translation)
+            elif len(parts_id) >= 2:
+                # New whitelist format: .../plugin_mz_N/PluginName/paramKey
+                param_key = parts_id[-1]
+                plugin_name = parts_id[-2]
+                self._replace_mz_plugin_param(data, plugin_name, param_key,
+                                              entry.original, entry.translation)
 
     def _apply_event_translation(self, data, entry: TranslationEntry):
         """Apply event dialogue/choice translation back into map or common event data."""
@@ -1136,6 +1248,52 @@ class RPGMakerMVParser:
                     if process_commands(event.get("list", [])):
                         return
 
+    def _replace_mz_plugin_param(self, data, plugin_name: str, param_key: str,
+                                   original: str, translation: str):
+        """Replace a specific parameter in an MZ plugin command's JSON args.
+
+        Finds code 357 commands where params[0] matches plugin_name, parses
+        the JSON dict in params[3], replaces the value at param_key, and
+        re-serializes.
+        """
+        def process_commands(cmd_list):
+            for cmd in cmd_list:
+                if not isinstance(cmd, dict) or cmd.get("code") != CODE_PLUGIN_COMMAND_MZ:
+                    continue
+                params = cmd.get("parameters", [])
+                if len(params) < 4 or params[0] != plugin_name:
+                    continue
+                arg_str = params[3] if isinstance(params[3], str) else ""
+                if not arg_str:
+                    continue
+                try:
+                    arg_dict = json.loads(arg_str)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(arg_dict, dict):
+                    continue
+                if arg_dict.get(param_key) == original:
+                    arg_dict[param_key] = translation
+                    params[3] = json.dumps(arg_dict, ensure_ascii=False)
+                    return True
+            return False
+
+        if isinstance(data, dict):
+            for event in (data.get("events") or []):
+                if not event or not isinstance(event, dict):
+                    continue
+                for page in (event.get("pages") or []):
+                    if page and isinstance(page, dict):
+                        if process_commands(page.get("list", [])):
+                            return
+            if "list" in data:
+                process_commands(data.get("list", []))
+        elif isinstance(data, list):
+            for event in data:
+                if event and isinstance(event, dict):
+                    if process_commands(event.get("list", [])):
+                        return
+
     # ── plugins.js extraction & export ─────────────────────────────
 
     @staticmethod
@@ -1180,88 +1338,60 @@ class RPGMakerMVParser:
             shutil.copy2(path, backup)
 
     def _parse_plugins(self, project_dir: str) -> list:
-        """Extract translatable strings from plugin parameters in plugins.js.
+        """Plugin parameter extraction from plugins.js — DISABLED.
 
-        Plugin entries default to 'skipped' status because some plugin parameters
-        are internal lookup keys — translating them would break the plugin.
-        Users must manually un-skip entries they want translated.
+        The scan-everything approach extracted internal lookup keys, asset IDs,
+        and command identifiers alongside display text.  Translating these broke
+        games.  Plugin display text is now extracted via the whitelist approach
+        in _extract_event_commands() (codes 356/357) which only targets known-
+        safe text from known plugins.
+
+        The original scan methods are preserved below (commented out) in case
+        a curated plugins.js whitelist is ever added.
         """
-        plugins_path = self._find_plugins_file(project_dir)
-        if not plugins_path:
-            return []
-        try:
-            plugins = self._load_plugins_js(plugins_path)
-        except (json.JSONDecodeError, OSError):
-            return []
+        return []
 
-        entries = []
-        for plugin in plugins:
-            if not isinstance(plugin, dict):
-                continue
-            if not plugin.get("status", False):
-                continue  # skip disabled plugins
-            name = plugin.get("name", "")
-            params = plugin.get("parameters", {})
-            if not isinstance(params, dict):
-                continue
-            for key, value in params.items():
-                if not isinstance(value, str) or not value.strip():
-                    continue
-                id_prefix = f"plugins.js/{name}/{key}"
-                self._scan_plugin_param(value, id_prefix, entries)
-        return entries
-
-    def _scan_plugin_param(self, value: str, id_prefix: str, entries: list):
-        """Scan a single plugin parameter value for translatable text.
-
-        Handles plain strings, JSON-encoded arrays, and JSON-encoded objects.
-        """
-        # Try parsing as JSON first (arrays/objects encoded as strings)
-        stripped = value.strip()
-        if stripped.startswith(("{", "[")):
-            try:
-                parsed = json.loads(stripped)
-                self._scan_parsed_value(parsed, id_prefix, entries)
-                return
-            except (json.JSONDecodeError, ValueError):
-                pass  # Not valid JSON — treat as plain string
-
-        # Plain string — check if it's translatable display text
-        if _is_plugin_display_text(value):
-            entries.append(TranslationEntry(
-                id=id_prefix,
-                file="plugins.js",
-                field="plugin_param",
-                original=value,
-                status="skipped",  # default skipped — user must opt-in
-            ))
-
-    def _scan_parsed_value(self, obj, id_prefix: str, entries: list):
-        """Recursively scan parsed JSON for translatable strings."""
-        if isinstance(obj, str):
-            # Could be nested JSON string
-            stripped = obj.strip()
-            if stripped.startswith(("{", "[")):
-                try:
-                    inner = json.loads(stripped)
-                    self._scan_parsed_value(inner, id_prefix, entries)
-                    return
-                except (json.JSONDecodeError, ValueError):
-                    pass
-            if _is_plugin_display_text(obj):
-                entries.append(TranslationEntry(
-                    id=id_prefix,
-                    file="plugins.js",
-                    field="plugin_param",
-                    original=obj,
-                    status="skipped",  # default skipped — user must opt-in
-                ))
-        elif isinstance(obj, list):
-            for i, item in enumerate(obj):
-                self._scan_parsed_value(item, f"{id_prefix}/[{i}]", entries)
-        elif isinstance(obj, dict):
-            for k, v in obj.items():
-                self._scan_parsed_value(v, f"{id_prefix}/{k}", entries)
+    # ── DISABLED: plugins.js parameter scanning ──────────────────
+    # Over-extracted internal identifiers, config keys, and command
+    # keywords that broke games when translated.  Replaced by the
+    # whitelist approach for event codes 356/357 above.
+    #
+    # def _scan_plugin_param(self, value, id_prefix, entries):
+    #     stripped = value.strip()
+    #     if stripped.startswith(("{", "[")):
+    #         try:
+    #             parsed = json.loads(stripped)
+    #             self._scan_parsed_value(parsed, id_prefix, entries)
+    #             return
+    #         except (json.JSONDecodeError, ValueError):
+    #             pass
+    #     if _is_plugin_display_text(value):
+    #         entries.append(TranslationEntry(
+    #             id=id_prefix, file="plugins.js", field="plugin_param",
+    #             original=value, status="skipped",
+    #         ))
+    #
+    # def _scan_parsed_value(self, obj, id_prefix, entries):
+    #     if isinstance(obj, str):
+    #         stripped = obj.strip()
+    #         if stripped.startswith(("{", "[")):
+    #             try:
+    #                 inner = json.loads(stripped)
+    #                 self._scan_parsed_value(inner, id_prefix, entries)
+    #                 return
+    #             except (json.JSONDecodeError, ValueError):
+    #                 pass
+    #         if _is_plugin_display_text(obj):
+    #             entries.append(TranslationEntry(
+    #                 id=id_prefix, file="plugins.js", field="plugin_param",
+    #                 original=obj, status="skipped",
+    #             ))
+    #     elif isinstance(obj, list):
+    #         for i, item in enumerate(obj):
+    #             self._scan_parsed_value(item, f"{id_prefix}/[{i}]", entries)
+    #     elif isinstance(obj, dict):
+    #         for k, v in obj.items():
+    #             self._scan_parsed_value(v, f"{id_prefix}/{k}", entries)
 
     def _save_plugins(self, project_dir: str, entries: list):
         """Write translated plugin parameter values back into plugins.js."""
