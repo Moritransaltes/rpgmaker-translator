@@ -6,6 +6,36 @@ A desktop tool for translating RPG Maker MV/MZ games using a local LLM — no cl
 
 ![Screenshot](screenshot.png)
 
+## Menu Overview
+
+### Project Menu
+Open, save, load projects and import translations from other sources.
+
+![Project Menu](screenshots/menu_project.png)
+
+**Import submenu** — consolidated import options:
+
+![Import Submenu](screenshots/menu_project_import.png)
+
+### Translate Menu
+Batch translation, text tools, and experimental features.
+
+![Translate Menu](screenshots/menu_translate.png)
+
+**Post-Process (Experimental)** — LLM-based cleanup passes:
+
+![Post-Process Submenu](screenshots/menu_translate_postprocess.png)
+
+### Glossary Menu
+Manage vocabulary files and glossary operations.
+
+![Glossary Menu](screenshots/menu_glossary.png)
+
+### Game Menu
+Export translations to game files and create distributable packages.
+
+![Game Menu](screenshots/menu_game.png)
+
 ## Key Features
 
 - **24 target languages** — English, Chinese, Korean, Spanish, French, German, Russian, and 17 more with quality ratings and model size guidance
@@ -17,7 +47,7 @@ A desktop tool for translating RPG Maker MV/MZ games using a local LLM — no cl
 - **Translation memory** — Auto-fills duplicate strings before batch translation, saving LLM calls
 - **Translation history** — Sends recent translations as context so the LLM maintains consistent tone and pronouns
 - **Auto-retry** — Detects leftover Japanese in translations and automatically retries with a stronger prompt
-- **Grammar polish** — English-to-English LLM pass to fix grammar without retranslating from Japanese
+- **Grammar polish** (Experimental) — English-to-English LLM pass to fix grammar without retranslating from Japanese
 - **Translation variants** — Generate 3 different translations and pick the best one
 - **Plugin parameter extraction** — Translates menu labels, UI strings, and descriptions from `plugins.js`
 - **Auto-save & checkpointing** — Auto-saves every 2 minutes + checkpoint every 25 entries during batch translation
@@ -186,7 +216,7 @@ Configure the window size in Settings > Translation Options > Translation histor
 - Right-click the editor to insert missing control codes (`\N[1]`, `\C[2]`, etc.) from the original
 - Right-click a row and choose **Mark as Reviewed** to mark it green
 - **Search** across all entries regardless of file tree selection — the search box ignores control codes so you can find text without worrying about `\C[2]` etc.
-- **Fix Missing Codes** (Translate menu): Batch-fix all translated entries that are missing control codes from the original
+- Missing control codes are automatically restored at every batch checkpoint and on completion
 
 ### Glossary
 
@@ -205,6 +235,13 @@ The glossary forces the LLM to use specific English translations for Japanese te
 
 Both layers are merged at translation time. Project entries override general entries if the same JP term exists in both.
 
+**Glossary menu operations:**
+- **Import Vocab File** — load a DazedMTL-compatible `vocab.txt` into the project glossary
+- **Export Vocab File** — export the merged glossary as a `vocab.txt` (DazedMTL format) for use in other tools
+- **Scan Translated Game** — open a translated game folder and harvest JP→EN pairs for your glossary
+- **Build from Translations** — scan this project's translations for terms to add to the general glossary
+- **Apply Glossary to All** — find translated entries where glossary terms are inconsistent and offer to fix them
+
 **Auto-glossary** — When database entries are translated, their JP → EN mappings are automatically added to the project glossary. This means if "ポーション" is translated as "Potion" in Items.json, every dialogue line mentioning ポーション will also say "Potion".
 
 **Recommended workflow** (two-stage batch):
@@ -216,7 +253,7 @@ This prevents inconsistent names like an NPC saying "Take the Holy Sword" when t
 
 ### Renaming the Project Folder
 
-Go to **Project > Rename Folder** to translate the Japanese folder name to English via Ollama and rename the project folder (appends " - WIP" by default). You can edit the suggested name before confirming.
+Go to **Project > Rename Folder...** to translate the Japanese folder name to English via Ollama and rename the project folder (appends " - WIP" by default). You can edit the suggested name before confirming.
 
 ### Saving and Resuming
 
@@ -237,15 +274,17 @@ Non-display text (file paths, color codes, JS code, asset IDs) is automatically 
 
 ### Exporting to the Game
 
-- **Export to Game** (`Ctrl+E`): Writes all translated text back into the game's original JSON files in the `data/` folder and `js/plugins.js` (via **Game** menu)
-- **Export TXT**: Saves a human-readable text patch file for reference (via **Game** menu)
-- **Restore Originals**: Restores original Japanese files from backup, including `plugins.js` (via **Game** menu)
+- **Apply Translation to Game** (`Ctrl+E`): Writes all translated text back into the game's JSON files. Requires checking a confirmation box before proceeding. Original files are backed up to `data_original/` on first export.
+- **Restore Original Game Files**: Restores backed-up Japanese originals to the game's data folder, including `plugins.js`
+- **Export Raw Text**: Saves a human-readable text file of all originals and translations for reference
+- **Share Translation Data**: Export translation mappings as a zip for other translators (no game data, copyright-safe)
+- **Create Install Package**: Export translated game files + install.bat as a zip — end users extract and run
 
 Exports always read from the original backup (`data_original/`, `plugins_original.js`) so you can safely re-export after editing translations inline.
 
 ### Word Wrap
 
-Go to **Translate > Apply Word Wrap** to automatically format translated text to fit the game's message window width. The tool detects message plugins (YEP_MessageCore, VisuMZ_MessageCore, etc.) and adjusts line lengths accordingly.
+Go to **Translate > Wrap Text to Lines** to automatically format translated text to fit the game's message window width. The tool detects message plugins (YEP_MessageCore, VisuMZ_MessageCore, etc.) and adjusts line lengths accordingly. If text needs more lines than the original, extra dialogue commands are inserted on export and RPG Maker auto-paginates.
 
 ## Settings
 

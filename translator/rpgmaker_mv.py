@@ -1130,7 +1130,7 @@ class RPGMakerMVParser:
             if entry.field in ("dialog", "scroll_text"):
                 while len(trans_lines) < len(orig_lines):
                     trans_lines.append("")
-                trans_lines = trans_lines[:len(orig_lines)]
+                # Allow extra lines — export inserts extra 401/405 commands
                 first = orig_lines[0] if orig_lines else ""
                 lookup = dialog_lookup if entry.field == "dialog" else scroll_lookup
                 lookup.setdefault(first, deque()).append(
@@ -1174,12 +1174,24 @@ class RPGMakerMVParser:
                                     match = False
                                     break
                             if match:
-                                for j, t in enumerate(tl):
-                                    cmd_list[i + j]["parameters"][0] = t
+                                # Replace text in existing 401 commands
+                                for j in range(len(ol)):
+                                    cmd_list[i + j]["parameters"][0] = tl[j]
+                                # Insert extra 401 commands for overflow
+                                extra = tl[len(ol):]
+                                if extra:
+                                    indent = cmd_list[i].get("indent", 0)
+                                    ins = i + len(ol)
+                                    for k, et in enumerate(extra):
+                                        cmd_list.insert(ins + k, {
+                                            "code": code_dialog,
+                                            "indent": indent,
+                                            "parameters": [et],
+                                        })
                                 del candidates[idx]
                                 if not candidates:
                                     del dialog_lookup[first_text]
-                                i += len(ol)
+                                i += len(ol) + len(extra)
                                 applied = True
                                 break
                         if not applied:
@@ -1209,12 +1221,22 @@ class RPGMakerMVParser:
                                     match = False
                                     break
                             if match:
-                                for j, t in enumerate(tl):
-                                    cmd_list[i + j]["parameters"][0] = t
+                                for j in range(len(ol)):
+                                    cmd_list[i + j]["parameters"][0] = tl[j]
+                                extra = tl[len(ol):]
+                                if extra:
+                                    indent = cmd_list[i].get("indent", 0)
+                                    ins = i + len(ol)
+                                    for k, et in enumerate(extra):
+                                        cmd_list.insert(ins + k, {
+                                            "code": code_scroll,
+                                            "indent": indent,
+                                            "parameters": [et],
+                                        })
                                 del candidates[idx]
                                 if not candidates:
                                     del scroll_lookup[first_text]
-                                i += len(ol)
+                                i += len(ol) + len(extra)
                                 applied = True
                                 break
                         if not applied:
@@ -1340,11 +1362,10 @@ class RPGMakerMVParser:
         original_lines = entry.original.split("\n")
         translation_lines = entry.translation.split("\n")
 
-        # Pad or trim translation to match original line count for dialogue/scroll
+        # Pad translation if shorter; allow longer for extra 401/405 insertion
         if entry.field in ("dialog", "scroll_text"):
             while len(translation_lines) < len(original_lines):
                 translation_lines.append("")
-            translation_lines = translation_lines[:len(original_lines)]
 
         if entry.field == "choice":
             # Choices: find in event commands with code 102
@@ -1381,8 +1402,19 @@ class RPGMakerMVParser:
                         break
 
                 if match and len(original_lines) > 0:
-                    for j, tl in enumerate(translation_lines):
-                        cmd_list[i + j]["parameters"][0] = tl
+                    # Replace text in existing commands
+                    for j in range(len(original_lines)):
+                        cmd_list[i + j]["parameters"][0] = translation_lines[j]
+                    # Insert extra commands for overflow lines
+                    extra = translation_lines[len(original_lines):]
+                    if extra:
+                        indent = cmd_list[i].get("indent", 0)
+                        ins = i + len(original_lines)
+                        for k, et in enumerate(extra):
+                            cmd_list.insert(ins + k, {
+                                "code": code, "indent": indent,
+                                "parameters": [et],
+                            })
                     return True
                 i += 1
             return False
@@ -1542,11 +1574,12 @@ class RPGMakerMVParser:
         """Parse plugins.js into a Python list of plugin dicts."""
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
-        # Match the array assigned to $plugins specifically, not any []
-        m = re.search(r'var\s+\$plugins\s*=\s*(\[.*?\])\s*;', content, re.DOTALL)
+        # Match the array assigned to $plugins — greedy so nested ] in
+        # JSON strings don't cause premature truncation
+        m = re.search(r'var\s+\$plugins\s*=\s*(\[.*\])\s*;', content, re.DOTALL)
         if not m:
-            # Fallback: non-greedy match of first complete JSON array
-            m = re.search(r'(\[.*?\])\s*;', content, re.DOTALL)
+            # Fallback: greedy match of first complete JSON array
+            m = re.search(r'(\[.*\])\s*;', content, re.DOTALL)
         if not m:
             return []
         return json.loads(m.group(1))
@@ -1565,6 +1598,137 @@ class RPGMakerMVParser:
                               os.path.basename(path).replace("plugins.", "plugins_original."))
         if not os.path.exists(backup):
             shutil.copy2(path, backup)
+
+    # ── Plugin diff (scan hand-edits) ────────────────────────────
+
+    def diff_plugins(self, project_dir: str,
+                     other_path: str = "") -> list:
+        """Compare two plugins.js files and auto-detect which is JP/EN.
+
+        Compares the project's plugins.js against *other_path* (or the
+        plugins_original.js backup).  Automatically determines which
+        side contains Japanese text and assigns original/translation
+        accordingly.
+
+        Args:
+            project_dir: Game project folder (contains js/plugins.js).
+            other_path: Path to the other plugins.js to compare.
+                If empty, auto-detects plugins_original.js as the backup.
+
+        Returns list of tuples:
+            (entry_id, plugin_name, param_label, original_jp, translated_en)
+        where entry_id matches the format used by _save_plugins() for export.
+        """
+        project_path = self._find_plugins_file(project_dir)
+        if not project_path:
+            return []
+
+        if not other_path:
+            # Auto-detect: plugins_original.js backup
+            backup = os.path.join(
+                os.path.dirname(project_path),
+                os.path.basename(project_path).replace(
+                    "plugins.", "plugins_original."),
+            )
+            if os.path.isfile(backup):
+                other_path = backup
+            else:
+                return []
+        if not os.path.isfile(other_path):
+            return []
+
+        try:
+            project_plugins = self._load_plugins_js(project_path)
+            other_plugins = self._load_plugins_js(other_path)
+        except (json.JSONDecodeError, OSError):
+            return []
+
+        # Index by plugin name
+        proj_by_name = {}
+        for p in project_plugins:
+            if isinstance(p, dict) and p.get("name"):
+                proj_by_name[p["name"]] = p.get("parameters", {})
+
+        other_by_name = {}
+        for p in other_plugins:
+            if isinstance(p, dict) and p.get("name"):
+                other_by_name[p["name"]] = p.get("parameters", {})
+
+        # Collect raw diffs as (id, plugin, label, project_text, other_text)
+        raw_diffs = []
+        for name in proj_by_name:
+            if name not in other_by_name:
+                continue
+            proj_params = proj_by_name[name]
+            other_params = other_by_name[name]
+            for key in proj_params:
+                if key not in other_params:
+                    continue
+                pv, ov = proj_params[key], other_params[key]
+                if pv == ov:
+                    continue
+                prefix = f"plugins.js/{name}/{key}"
+                self._diff_values(pv, ov, prefix, name, key, raw_diffs)
+
+        if not raw_diffs:
+            return []
+
+        # Auto-detect direction: count Japanese on each side
+        proj_jp = sum(1 for _, _, _, p, _ in raw_diffs if _has_japanese(p))
+        other_jp = sum(1 for _, _, _, _, o in raw_diffs if _has_japanese(o))
+
+        if other_jp >= proj_jp:
+            # Other file has more JP → other = original, project = translated
+            return [(eid, pn, pl, other_t, proj_t)
+                    for eid, pn, pl, proj_t, other_t in raw_diffs]
+        else:
+            # Project file has more JP → project = original, other = translated
+            return raw_diffs
+
+    def _diff_values(self, orig, curr, id_prefix: str,
+                     plugin_name: str, param_label: str, out: list):
+        """Recursively diff two parameter values, appending to *out*.
+
+        Handles plain strings and JSON-encoded nested structures.
+        """
+        # Both are simple strings — leaf diff
+        if isinstance(orig, str) and isinstance(curr, str):
+            # Try parsing as JSON for nested structures
+            try:
+                o_parsed = json.loads(orig)
+                c_parsed = json.loads(curr)
+                # Both parsed — walk recursively
+                self._diff_parsed(o_parsed, c_parsed, id_prefix,
+                                  plugin_name, param_label, out)
+                return
+            except (json.JSONDecodeError, ValueError):
+                pass
+            # Plain string diff
+            if orig != curr and orig.strip():
+                out.append((id_prefix, plugin_name, param_label, orig, curr))
+            return
+
+        # Already-parsed structures (shouldn't happen at top level, but be safe)
+        if type(orig) == type(curr):
+            self._diff_parsed(orig, curr, id_prefix,
+                              plugin_name, param_label, out)
+
+    def _diff_parsed(self, orig, curr, id_prefix: str,
+                     plugin_name: str, param_label: str, out: list):
+        """Walk parsed JSON structures and report leaf-level string diffs."""
+        if isinstance(orig, list) and isinstance(curr, list):
+            for i in range(min(len(orig), len(curr))):
+                self._diff_values(orig[i], curr[i], f"{id_prefix}/[{i}]",
+                                  plugin_name, param_label, out)
+        elif isinstance(orig, dict) and isinstance(curr, dict):
+            for key in orig:
+                if key in curr:
+                    self._diff_values(orig[key], curr[key],
+                                      f"{id_prefix}/{key}",
+                                      plugin_name, param_label, out)
+        elif isinstance(orig, str) and isinstance(curr, str):
+            if orig != curr and orig.strip():
+                out.append((id_prefix, plugin_name, param_label, orig, curr))
 
     def _parse_plugins(self, project_dir: str) -> list:
         """Plugin parameter extraction from plugins.js — DISABLED.

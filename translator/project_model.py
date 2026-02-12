@@ -158,7 +158,8 @@ class TranslationProject:
 
         return stats
 
-    def import_from_game_folder(self, donor_entries: list) -> dict:
+    def import_from_game_folder(self, donor_entries: list,
+                               swap: bool = False) -> dict:
         """Import translations from an already-translated game folder.
 
         The donor entries come from parsing a translated game with
@@ -166,11 +167,12 @@ class TranslationProject:
         contains the translated text (since the game files are already in
         the target language).
 
-        Matching strategy:
-        1. Exact ID match — same file + JSON position.  If the donor text
-           differs from our Japanese original, the donor text is the
-           translation.
-        2. No text-based fallback (we don't know the donor's source language).
+        Args:
+            donor_entries: Entries parsed from the donor game folder.
+            swap: If True, donor text becomes the new ``original`` (JP)
+                and the project's current ``original`` becomes the
+                ``translation`` (EN).  Use when the project was opened
+                from the translated game and the donor is the JP original.
 
         Returns:
             Dict with stats: {"imported": int, "identical": int,
@@ -198,8 +200,13 @@ class TranslationProject:
                 stats["identical"] += 1
                 continue
 
-            # Different text at same position = translation
-            entry.translation = donor_text
+            if swap:
+                # Donor = JP original, project's current original = EN translation
+                entry.translation = entry.original
+                entry.original = donor_text
+            else:
+                # Normal: donor text = translation
+                entry.translation = donor_text
             entry.status = "translated"
             stats["imported"] += 1
 

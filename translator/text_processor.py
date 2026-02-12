@@ -318,10 +318,15 @@ class TextProcessor:
         return "\n".join(lines)
 
     def _apply_manual_wordwrap(self, text: str, orig_line_count: int) -> str:
-        """Redistribute text across orig_line_count lines to maximize fill.
+        """Redistribute text across lines to fit message window width.
 
-        Joins all text, re-wraps to chars_per_line, then fits into the
-        available line slots.  Sets self._last_overflow if text can't fit.
+        Joins all text, re-wraps to chars_per_line, and expands to as
+        many lines as needed.  The export code inserts extra 401/405
+        commands when the translation needs more lines than the original.
+        RPG Maker auto-paginates when text exceeds the message box height.
+
+        Sets self._last_overflow if the wrapped text exceeds a single
+        message box (analyzer.max_lines).
         """
         max_chars = self.analyzer.chars_per_line
         self._last_overflow = False
@@ -339,13 +344,9 @@ class TextProcessor:
         # Word-wrap into a flat list of lines
         wrapped = self._wrap_to_lines(all_text, max_chars)
 
-        # Check overflow — text needs more lines than the original provides
-        if len(wrapped) > orig_line_count:
+        # Flag overflow if text exceeds one message box (needs pagination)
+        if len(wrapped) > self.analyzer.max_lines:
             self._last_overflow = True
-            # Force-fit: keep first N-1 lines, merge the rest into last slot
-            fitted = wrapped[:orig_line_count - 1]
-            fitted.append(" ".join(wrapped[orig_line_count - 1:]))
-            wrapped = fitted
 
         # Pad with empty lines if fewer lines than original
         while len(wrapped) < orig_line_count:
@@ -394,10 +395,14 @@ class TextProcessor:
     def process_all(self, entries: list) -> int:
         """Process all translated entries. Returns count of modified entries.
 
-        After calling, check self.overflow_entries for entries that couldn't
-        fit within their original line count.
+        After calling, check:
+          self.overflow_entries — entries that exceed one message box
+          self.expanded_count  — entries that needed extra 401 lines
+          self.extra_lines     — total extra 401 commands that will be inserted
         """
         self.overflow_entries = []
+        self.expanded_count = 0
+        self.extra_lines = 0
         self._last_overflow = False
         count = 0
         for entry in entries:
@@ -408,11 +413,17 @@ class TextProcessor:
 
             use_tag = entry.field in self._WORDWRAP_FIELDS
             self._last_overflow = False
+            orig_line_count = len(entry.original.split("\n"))
             processed = self.process_entry(
                 entry.original, entry.translation, use_tag=use_tag)
             if processed != entry.translation:
                 entry.translation = processed
                 count += 1
+            # Track entries that expanded beyond original line count
+            new_line_count = len(processed.split("\n"))
+            if new_line_count > orig_line_count:
+                self.expanded_count += 1
+                self.extra_lines += new_line_count - orig_line_count
             if self._last_overflow:
                 self.overflow_entries.append((entry.id, entry.file))
         return count

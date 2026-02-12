@@ -221,7 +221,7 @@ class MainWindow(QMainWindow):
 
         # Tab 2: Image Translation
         self.image_panel = ImagePanel()
-        self.tabs.addTab(self.image_panel, "Image Translation")
+        self.tabs.addTab(self.image_panel, "Image Translation (Experimental)")
 
         self.setCentralWidget(self.tabs)
 
@@ -261,41 +261,33 @@ class MainWindow(QMainWindow):
         self.rename_action.setEnabled(False)
         project_menu.addAction(self.rename_action)
 
-        self.import_action = QAction("Import Translations...", self)
+        # Import submenu
+        import_menu = project_menu.addMenu("Import")
+
+        self.import_action = QAction("From Save State...", self)
         self.import_action.setToolTip(
             "Import translations from an older version's save state"
         )
         self.import_action.triggered.connect(self._import_translations)
         self.import_action.setEnabled(False)
-        project_menu.addAction(self.import_action)
+        import_menu.addAction(self.import_action)
 
-        self.import_folder_action = QAction("Import from Translated Game...", self)
+        self.import_folder_action = QAction("From Game Folder...", self)
         self.import_folder_action.setToolTip(
-            "Import translations from an already-translated game folder "
-            "(e.g. someone else's v1.0 translation applied to your v1.2 project)"
+            "Import translations from an already-translated game folder"
         )
         self.import_folder_action.triggered.connect(self._import_from_game_folder)
         self.import_folder_action.setEnabled(False)
-        project_menu.addAction(self.import_folder_action)
+        import_menu.addAction(self.import_folder_action)
 
-        self.scan_glossary_action = QAction(
-            "Scan Translated Game for Glossary...", self)
-        self.scan_glossary_action.setToolTip(
-            "Open a translated game folder and harvest JP→EN pairs "
-            "to add to your general glossary"
+        self.scan_plugin_edits_action = QAction("Plugin Parameters...", self)
+        self.scan_plugin_edits_action.setToolTip(
+            "Compare two plugins.js files and import translated parameters"
         )
-        self.scan_glossary_action.triggered.connect(
-            self._scan_game_for_glossary)
-        self.scan_glossary_action.setEnabled(False)
-        project_menu.addAction(self.scan_glossary_action)
-
-        self.load_vocab_action = QAction("Load Vocab File...", self)
-        self.load_vocab_action.setToolTip(
-            "Import a DazedMTL-style vocab.txt into project glossary"
-        )
-        self.load_vocab_action.triggered.connect(self._load_vocab_file)
-        self.load_vocab_action.setEnabled(False)
-        project_menu.addAction(self.load_vocab_action)
+        self.scan_plugin_edits_action.triggered.connect(
+            self._scan_plugin_edits)
+        self.scan_plugin_edits_action.setEnabled(False)
+        import_menu.addAction(self.scan_plugin_edits_action)
 
         # ── Translate menu ────────────────────────────────────────
         translate_menu = menubar.addMenu("Translate")
@@ -346,64 +338,13 @@ class MainWindow(QMainWindow):
 
         translate_menu.addSeparator()
 
-        self.wordwrap_action = QAction("Apply Word Wrap", self)
+        self.wordwrap_action = QAction("Wrap Text to Lines", self)
+        self.wordwrap_action.setToolTip(
+            "Redistribute translated text across lines to fit message window width"
+        )
         self.wordwrap_action.triggered.connect(self._apply_wordwrap)
         self.wordwrap_action.setEnabled(False)
         translate_menu.addAction(self.wordwrap_action)
-
-        self.strip_wordwrap_action = QAction("Strip Word Wrap Tags", self)
-        self.strip_wordwrap_action.setToolTip(
-            "Remove all <WordWrap> tags from translations"
-        )
-        self.strip_wordwrap_action.triggered.connect(self._strip_wordwrap_tags)
-        self.strip_wordwrap_action.setEnabled(False)
-        translate_menu.addAction(self.strip_wordwrap_action)
-
-        self.polish_action = QAction("Polish Grammar", self)
-        self.polish_action.setToolTip(
-            "Run all translations through the LLM for grammar and fluency cleanup"
-        )
-        self.polish_action.triggered.connect(self._polish_translations)
-        self.polish_action.setEnabled(False)
-        translate_menu.addAction(self.polish_action)
-
-        self.fix_codes_action = QAction("Fix Missing Codes", self)
-        self.fix_codes_action.setToolTip(
-            "Scan all translated entries and auto-restore any missing control codes"
-        )
-        self.fix_codes_action.triggered.connect(self._fix_missing_codes)
-        self.fix_codes_action.setEnabled(False)
-        translate_menu.addAction(self.fix_codes_action)
-
-        self.apply_glossary_action = QAction("Apply Glossary to Translations", self)
-        self.apply_glossary_action.setToolTip(
-            "Find translated entries where glossary terms are inconsistent and offer to fix them"
-        )
-        self.apply_glossary_action.triggered.connect(self._apply_glossary)
-        self.apply_glossary_action.setEnabled(False)
-        translate_menu.addAction(self.apply_glossary_action)
-
-        self.scan_project_glossary_action = QAction(
-            "Harvest Glossary from Project", self)
-        self.scan_project_glossary_action.setToolTip(
-            "Scan this project's translations for terms to add "
-            "to your general glossary"
-        )
-        self.scan_project_glossary_action.triggered.connect(
-            self._scan_project_for_glossary)
-        self.scan_project_glossary_action.setEnabled(False)
-        translate_menu.addAction(self.scan_project_glossary_action)
-
-        self.consistency_action = QAction("Consistency Pass", self)
-        self.consistency_action.setShortcut("Ctrl+Shift+C")
-        self.consistency_action.setToolTip(
-            "Fix name spelling variants, capitalization, and term inconsistencies"
-        )
-        self.consistency_action.triggered.connect(self._consistency_pass)
-        self.consistency_action.setEnabled(False)
-        translate_menu.addAction(self.consistency_action)
-
-        translate_menu.addSeparator()
 
         self.find_replace_action = QAction("Find && Replace...", self)
         self.find_replace_action.setShortcut("Ctrl+H")
@@ -414,7 +355,30 @@ class MainWindow(QMainWindow):
 
         translate_menu.addSeparator()
 
-        self.translate_images_action = QAction("Translate Images...", self)
+        # Post-Process submenu (experimental)
+        postprocess_menu = translate_menu.addMenu("Post-Process (Experimental)")
+
+        self.polish_action = QAction("Polish Grammar", self)
+        self.polish_action.setToolTip(
+            "Run all translations through the LLM for grammar and fluency cleanup"
+        )
+        self.polish_action.triggered.connect(self._polish_translations)
+        self.polish_action.setEnabled(False)
+        postprocess_menu.addAction(self.polish_action)
+
+        self.consistency_action = QAction("Consistency Pass", self)
+        self.consistency_action.setShortcut("Ctrl+Shift+C")
+        self.consistency_action.setToolTip(
+            "Fix name spelling variants, capitalization, and term inconsistencies"
+        )
+        self.consistency_action.triggered.connect(self._consistency_pass)
+        self.consistency_action.setEnabled(False)
+        postprocess_menu.addAction(self.consistency_action)
+
+        translate_menu.addSeparator()
+
+        self.translate_images_action = QAction(
+            "Translate Images (Experimental)...", self)
         self.translate_images_action.setShortcut("Ctrl+I")
         self.translate_images_action.setToolTip(
             "OCR Japanese text from game images, translate, and render English overlays"
@@ -423,50 +387,103 @@ class MainWindow(QMainWindow):
         self.translate_images_action.setEnabled(False)
         translate_menu.addAction(self.translate_images_action)
 
+        # ── Glossary menu ─────────────────────────────────────────
+        glossary_menu = menubar.addMenu("Glossary")
+
+        self.load_vocab_action = QAction("Import Vocab File...", self)
+        self.load_vocab_action.setToolTip(
+            "Import a DazedMTL-style vocab.txt into project glossary"
+        )
+        self.load_vocab_action.triggered.connect(self._load_vocab_file)
+        self.load_vocab_action.setEnabled(False)
+        glossary_menu.addAction(self.load_vocab_action)
+
+        self.export_vocab_action = QAction("Export Vocab File...", self)
+        self.export_vocab_action.setToolTip(
+            "Export glossary as a DazedMTL-compatible vocab.txt"
+        )
+        self.export_vocab_action.triggered.connect(self._export_vocab_file)
+        self.export_vocab_action.setEnabled(False)
+        glossary_menu.addAction(self.export_vocab_action)
+
+        glossary_menu.addSeparator()
+
+        self.scan_glossary_action = QAction(
+            "Scan Translated Game...", self)
+        self.scan_glossary_action.setToolTip(
+            "Open a translated game folder and harvest JP\u2192EN pairs "
+            "to add to your general glossary"
+        )
+        self.scan_glossary_action.triggered.connect(
+            self._scan_game_for_glossary)
+        self.scan_glossary_action.setEnabled(False)
+        glossary_menu.addAction(self.scan_glossary_action)
+
+        self.scan_project_glossary_action = QAction(
+            "Build from Translations", self)
+        self.scan_project_glossary_action.setToolTip(
+            "Scan this project's translations for terms to add "
+            "to your general glossary"
+        )
+        self.scan_project_glossary_action.triggered.connect(
+            self._scan_project_for_glossary)
+        self.scan_project_glossary_action.setEnabled(False)
+        glossary_menu.addAction(self.scan_project_glossary_action)
+
+        glossary_menu.addSeparator()
+
+        self.apply_glossary_action = QAction("Apply Glossary to All", self)
+        self.apply_glossary_action.setToolTip(
+            "Find translated entries where glossary terms are inconsistent "
+            "and offer to fix them"
+        )
+        self.apply_glossary_action.triggered.connect(self._apply_glossary)
+        self.apply_glossary_action.setEnabled(False)
+        glossary_menu.addAction(self.apply_glossary_action)
+
         # ── Game menu ─────────────────────────────────────────────
         game_menu = menubar.addMenu("Game")
 
-        self.export_action = QAction("Export to Game", self)
+        self.export_action = QAction("Apply Translation to Game", self)
         self.export_action.setShortcut("Ctrl+E")
+        self.export_action.setToolTip(
+            "Write translated text into the game's data files"
+        )
         self.export_action.triggered.connect(self._export_to_game)
         self.export_action.setEnabled(False)
         game_menu.addAction(self.export_action)
 
-        self.restore_action = QAction("Restore Originals", self)
+        self.restore_action = QAction("Restore Original Game Files", self)
+        self.restore_action.setToolTip(
+            "Restore backed-up Japanese originals to the game's data folder"
+        )
         self.restore_action.triggered.connect(self._restore_originals)
         self.restore_action.setEnabled(False)
         game_menu.addAction(self.restore_action)
 
         game_menu.addSeparator()
 
-        self.txt_export_action = QAction("Export TXT...", self)
+        self.txt_export_action = QAction("Export Raw Text...", self)
+        self.txt_export_action.setToolTip(
+            "Export all original and translated text to a plain text file"
+        )
         self.txt_export_action.triggered.connect(self._export_txt)
         self.txt_export_action.setEnabled(False)
         game_menu.addAction(self.txt_export_action)
 
-        game_menu.addSeparator()
-
-        self.create_patch_action = QAction("Create Translation Patch...", self)
+        self.create_patch_action = QAction("Share Translation Data...", self)
         self.create_patch_action.setToolTip(
-            "Export translations as a distributable zip (no game data, copyright-safe)"
+            "Export translation mappings as a zip for other translators "
+            "(no game data, copyright-safe)"
         )
         self.create_patch_action.triggered.connect(self._create_patch)
         self.create_patch_action.setEnabled(False)
         game_menu.addAction(self.create_patch_action)
 
-        self.apply_patch_action = QAction("Apply Translation Patch...", self)
-        self.apply_patch_action.setToolTip(
-            "Import translations from a patch zip created by another translator"
-        )
-        self.apply_patch_action.triggered.connect(self._apply_patch)
-        self.apply_patch_action.setEnabled(False)
-        game_menu.addAction(self.apply_patch_action)
-
-        game_menu.addSeparator()
-
-        self.export_zip_action = QAction("Export Patch Zip (for distribution)...", self)
+        self.export_zip_action = QAction("Create Install Package...", self)
         self.export_zip_action.setToolTip(
-            "Export translated game files + install.bat as a zip — end users just extract and run"
+            "Export translated game files + install.bat as a zip \u2014 "
+            "end users just extract and run"
         )
         self.export_zip_action.triggered.connect(self._export_patch_zip)
         self.export_zip_action.setEnabled(False)
@@ -489,6 +506,8 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.batch_dialogue_action)
         toolbar.addAction(self.batch_action)
         toolbar.addAction(self.stop_action)
+        toolbar.addSeparator()
+        toolbar.addAction(self.export_action)
 
     def _build_statusbar(self):
         """Build the bottom status bar with progress."""
@@ -1105,32 +1124,35 @@ class MainWindow(QMainWindow):
     def _enable_project_actions(self):
         """Enable all project-dependent menu actions."""
         has_path = bool(self.project.project_path)
+        # Project
         self.save_action.setEnabled(True)
         self.save_as_action.setEnabled(True)
+        self.rename_action.setEnabled(has_path)
+        self.import_action.setEnabled(True)
+        self.import_folder_action.setEnabled(True)
+        self.scan_plugin_edits_action.setEnabled(True)
+        # Translate
         self.batch_db_action.setEnabled(True)
         self.batch_dialogue_action.setEnabled(True)
         self.batch_action.setEnabled(True)
         self.batch_actor_action.setEnabled(True)
+        self.wordwrap_action.setEnabled(True)
+        self.find_replace_action.setEnabled(True)
+        self.polish_action.setEnabled(True)
+        self.consistency_action.setEnabled(True)
+        self.translate_images_action.setEnabled(True)
+        # Glossary
+        self.load_vocab_action.setEnabled(True)
+        self.export_vocab_action.setEnabled(True)
+        self.scan_glossary_action.setEnabled(True)
+        self.scan_project_glossary_action.setEnabled(True)
+        self.apply_glossary_action.setEnabled(True)
+        # Game
         self.export_action.setEnabled(has_path)
         self.restore_action.setEnabled(has_path)
-        self.rename_action.setEnabled(has_path)
-        self.import_action.setEnabled(True)
-        self.import_folder_action.setEnabled(True)
-        self.scan_glossary_action.setEnabled(True)
-        self.load_vocab_action.setEnabled(True)
         self.txt_export_action.setEnabled(True)
         self.create_patch_action.setEnabled(True)
-        self.apply_patch_action.setEnabled(True)
         self.export_zip_action.setEnabled(True)
-        self.wordwrap_action.setEnabled(True)
-        self.strip_wordwrap_action.setEnabled(True)
-        self.fix_codes_action.setEnabled(True)
-        self.polish_action.setEnabled(True)
-        self.apply_glossary_action.setEnabled(True)
-        self.scan_project_glossary_action.setEnabled(True)
-        self.consistency_action.setEnabled(True)
-        self.find_replace_action.setEnabled(True)
-        self.translate_images_action.setEnabled(True)
 
     def _import_translations(self):
         """Import translations from an older version's save state."""
@@ -1199,12 +1221,12 @@ class MainWindow(QMainWindow):
             return
 
         folder = QFileDialog.getExistingDirectory(
-            self, "Select Translated Game Folder"
+            self, "Select Game Folder to Import From"
         )
         if not folder:
             return
 
-        from ..rpgmaker_mv import RPGMakerMVParser
+        from ..rpgmaker_mv import RPGMakerMVParser, _has_japanese
 
         parser = RPGMakerMVParser()
         try:
@@ -1225,21 +1247,57 @@ class MainWindow(QMainWindow):
             )
             return
 
+        # Detect if columns would be swapped: donor has JP text but
+        # project originals are non-JP (user opened the translated game
+        # and is importing the JP original).
+        swap = False
+        donor_by_id = {e.id: e.original for e in donor_entries}
+        sample_donor_jp = 0
+        sample_proj_jp = 0
+        sample_count = 0
+        for entry in self.project.entries:
+            if entry.status != "untranslated":
+                continue
+            dt = donor_by_id.get(entry.id)
+            if dt is None or dt == entry.original:
+                continue
+            if _has_japanese(dt):
+                sample_donor_jp += 1
+            if _has_japanese(entry.original):
+                sample_proj_jp += 1
+            sample_count += 1
+            if sample_count >= 50:
+                break
+
+        if sample_count > 0 and sample_donor_jp > sample_proj_jp:
+            # Donor looks more Japanese than project — likely reversed
+            reply = QMessageBox.question(
+                self, "Import — Column Order",
+                "The selected folder appears to contain the Japanese "
+                "original, while your project contains the translated "
+                "text.\n\n"
+                "Swap columns so the Japanese text becomes the Original "
+                "and your current text becomes the Translation?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            swap = (reply == QMessageBox.StandardButton.Yes)
+
         current_untranslated = self.project.untranslated_count
         reply = QMessageBox.question(
-            self, "Import from Translated Game",
+            self, "Import from Game Folder",
             f"Donor game: {len(donor_entries)} text entries\n"
             f"Current project: {self.project.total} entries "
             f"({current_untranslated} untranslated)\n\n"
             "This will match entries by file position and import\n"
-            "translations where the text differs (i.e. was translated).\n\n"
+            "translations where the text differs.\n\n"
             "Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        stats = self.project.import_from_game_folder(donor_entries)
+        stats = self.project.import_from_game_folder(
+            donor_entries, swap=swap)
 
         # Refresh UI
         self.trans_table.set_entries(self.project.entries)
@@ -1253,6 +1311,91 @@ class MainWindow(QMainWindow):
             f"  \u2022 {stats['new']} new entries in v1.2 (need translation)\n"
             f"  \u2022 {stats['skipped']} already translated (kept)\n"
         )
+
+    # ── Scan plugin edits ────────────────────────────────────────
+
+    def _scan_plugin_edits(self):
+        """Compare a selected original plugins.js vs the project's plugins.js."""
+        if not self.project or not self.project.project_path:
+            return
+
+        from ..rpgmaker_mv import RPGMakerMVParser
+        from .plugin_diff_dialog import PluginDiffDialog
+        from ..project_model import TranslationEntry
+
+        parser = RPGMakerMVParser()
+
+        # Try auto-detect first (plugins_original.js as JP backup)
+        diffs = parser.diff_plugins(self.project.project_path)
+
+        if not diffs:
+            # No backup found or no diffs — ask user to pick the other file
+            default_dir = self.project.project_path
+            for sub in ("js", os.path.join("www", "js")):
+                candidate = os.path.join(self.project.project_path,
+                                         sub, "plugins.js")
+                if os.path.isfile(candidate):
+                    default_dir = os.path.dirname(candidate)
+                    break
+
+            other_path, _ = QFileDialog.getOpenFileName(
+                self, "Select plugins.js to compare against",
+                default_dir,
+                "JavaScript Files (*.js);;All Files (*)",
+            )
+            if not other_path:
+                return
+
+            diffs = parser.diff_plugins(self.project.project_path,
+                                        other_path=other_path)
+
+        if not diffs:
+            QMessageBox.information(
+                self, "Scan Plugin Edits",
+                "No parameter differences found between\n"
+                f"the selected file and the project's plugins.js."
+            )
+            return
+
+        dlg = PluginDiffDialog(diffs, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        accepted = dlg.accepted_diffs()
+        if not accepted:
+            return
+
+        # Build set of existing entry IDs to avoid duplicates
+        existing_ids = {e.id for e in self.project.entries}
+
+        added = 0
+        skipped = 0
+        for entry_id, original, translation in accepted:
+            if entry_id in existing_ids:
+                skipped += 1
+                continue
+            entry = TranslationEntry(
+                id=entry_id,
+                file="plugins.js",
+                field="plugin_param",
+                original=original,
+                translation=translation,
+                status="translated",
+            )
+            self.project.entries.append(entry)
+            existing_ids.add(entry_id)
+            added += 1
+
+        if added:
+            # Invalidate cached index so tree view sees new file
+            self.project._build_index()
+            self.trans_table.set_entries(self.project.entries)
+            self.file_tree.load_project(self.project)
+
+        msg = f"Imported {added} plugin translations."
+        if skipped:
+            msg += f"\n{skipped} entries skipped (already in project)."
+        QMessageBox.information(self, "Scan Plugin Edits", msg)
 
     # ── Glossary scan from translated game ─────────────────────────
 
@@ -1415,6 +1558,71 @@ class MainWindow(QMainWindow):
             f"Added {added} terms to project glossary"
             + (f" + {len(genders)} character genders" if genders else "")
             + f"\n({len(glossary) - added} already existed)"
+        )
+
+    def _export_vocab_file(self):
+        """Export glossary as a DazedMTL-compatible vocab.txt."""
+        if not self.project:
+            return
+
+        # Merge general + project glossary (project overrides general)
+        merged = {}
+        if hasattr(self, "_general_glossary") and self._general_glossary:
+            merged.update(self._general_glossary)
+        if self.project.glossary:
+            merged.update(self.project.glossary)
+
+        if not merged:
+            QMessageBox.information(
+                self, "Export Vocab",
+                "No glossary terms to export."
+            )
+            return
+
+        # Build gender lookup from actor_genders + actor entries
+        genders = {}
+        if self.project.actor_genders:
+            # actor_genders: {actor_id: "female"/"male"/"unknown"}
+            for entry in self.project.entries:
+                if entry.file == "Actors.json" and entry.field == "name":
+                    # Extract actor ID from entry.id
+                    # Format: Actors.json/[n]/name
+                    import re as _re
+                    m = _re.search(r'\[(\d+)\]', entry.id)
+                    if m:
+                        actor_id = int(m.group(1))
+                        gender = self.project.actor_genders.get(actor_id)
+                        if gender and gender != "unknown":
+                            jp_name = entry.original
+                            en_name = entry.translation or jp_name
+                            genders[jp_name] = gender.capitalize()
+                            genders[en_name] = gender.capitalize()
+
+        # Default path
+        default_dir = self.project.project_path or ""
+        default_path = os.path.join(default_dir, "vocab.txt") if default_dir else "vocab.txt"
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Vocab File", default_path,
+            "Text Files (*.txt);;All Files (*)",
+        )
+        if not path:
+            return
+
+        lines = []
+        for jp, en in sorted(merged.items()):
+            gender = genders.get(jp, "")
+            if gender:
+                lines.append(f"{jp} ({en}) - {gender}")
+            else:
+                lines.append(f"{jp} ({en})")
+
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
+        QMessageBox.information(
+            self, "Export Vocab",
+            f"Exported {len(lines)} terms to:\n{path}"
         )
 
     def _scan_game_for_glossary(self):
@@ -1604,15 +1812,30 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Nothing to Export", "No translated entries to export.")
             return
 
-        reply = QMessageBox.question(
-            self, "Confirm Export",
-            f"This will overwrite {len(set(e.file for e in translated))} file(s) "
-            f"in:\n{self.project.project_path}\n\n"
-            f"Original files will be backed up to data_original/ (first export only).\n\n"
-            f"Continue?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        # Confirmation dialog with checkbox
+        from PyQt6.QtWidgets import QCheckBox, QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Apply Translation to Game")
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(QLabel(
+            f"This will overwrite {len(set(e.file for e in translated))} "
+            f"file(s) in:\n{self.project.project_path}\n\n"
+            f"Original files will be backed up to data_original/ "
+            f"(first export only)."
+        ))
+        checkbox = QCheckBox("I understand this will modify my game files")
+        layout.addWidget(checkbox)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok_btn.setEnabled(False)
+        checkbox.toggled.connect(ok_btn.setEnabled)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
         try:
@@ -2443,10 +2666,15 @@ class MainWindow(QMainWindow):
         self.trans_table.refresh()
 
         overflows = self.text_processor.overflow_entries
+        expanded = self.text_processor.expanded_count
+        extra = self.text_processor.extra_lines
         msg = f"Modified {count} entries.\nWrapped to ~{cpl} chars/line."
+        if expanded:
+            msg += (f"\n\n{expanded} entries needed extra lines "
+                    f"(+{extra} 401 commands will be added on export).")
         if overflows:
-            msg += f"\n\n{len(overflows)} entries overflow their text box"
-            msg += " and may need manual shortening."
+            msg += (f"\n\n{len(overflows)} entries exceed one message box "
+                    "and will auto-paginate in-game.")
             # Show first few overflow files
             files = sorted(set(f for _, f in overflows))
             if len(files) <= 10:
