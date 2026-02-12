@@ -28,6 +28,7 @@ CODE_CHANGE_NICKNAME = 324    # Change Actor Nickname — params[0]=actorId, par
 CODE_CHANGE_PROFILE = 325     # Change Actor Profile — params[0]=actorId, params[1]=profile
 CODE_PLUGIN_COMMAND_MV = 356  # Plugin Command (MV) — params[0]=command string
 CODE_PLUGIN_COMMAND_MZ = 357  # Plugin Command (MZ) — params vary by plugin
+CODE_CONTROL_VARIABLES = 122  # Control Variables — params[3]=operand type, params[4]=expression
 CODE_SCRIPT = 355             # Script (first line) — params[0]=JS code
 CODE_SCRIPT_CONT = 655        # Script (continuation) — params[0]=JS code
 
@@ -146,6 +147,10 @@ _SCRIPT_VAR_SET_RE = re.compile(
     r'\$gameVariables\.setValue\(\s*(\d+)\s*,\s*(["\'])(.*?)\2\s*\)')
 _SCRIPT_VAR_DATA_RE = re.compile(
     r'\$gameVariables\._data\[\s*(\d+)\s*\]\s*=\s*(["\'])(.*?)\2')
+
+# Control Variables (122) with operand type 4 (script): params[4] is a JS expression.
+# When it's a string literal like "\"text\"", extract the inner text.
+_CONTROL_VAR_STRING_RE = re.compile(r'^"(.*)"$')
 
 
 def _is_plugin_display_text(text: str) -> bool:
@@ -1148,6 +1153,28 @@ class RPGMakerMVParser:
                                         original=val,
                                     ))
 
+            # Control Variables (122) with script operand — experimental:
+            # params = [startVar, endVar, ?, operandType, expression]
+            # operandType 4 = "Script", expression is a JS string.
+            # When expression is a quoted string literal like '"quest text"',
+            # extract the inner text for translation.
+            if self.extract_script_strings and code == CODE_CONTROL_VARIABLES:
+                if len(params) >= 5 and params[3] == 4:
+                    expr = params[4] if isinstance(params[4], str) else ""
+                    m = _CONTROL_VAR_STRING_RE.match(expr)
+                    if m:
+                        text = m.group(1)
+                        if text and _has_japanese(text):
+                            var_id = params[0]
+                            dialog_counter += 1
+                            entries.append(TranslationEntry(
+                                id=f"{filename}/{prefix}/script_var_{dialog_counter}",
+                                file=filename,
+                                field="script_variable",
+                                original=text,
+                                context=f"[CONTROL_VAR:{var_id}]",
+                            ))
+
             # Script (355/655) — experimental: extract string literals
             # from $gameVariables.setValue(N, "Japanese text") calls.
             if self.extract_script_strings and code == CODE_SCRIPT:
@@ -1459,10 +1486,13 @@ class RPGMakerMVParser:
                 self._replace_mz_plugin_param(data, plugin_name, param_key,
                                               entry.original, entry.translation)
 
-        # Script variable (355/655) — replace string in $gameVariables.setValue()
+        # Script variable — Control Variables (122) or Script (355/655)
         elif entry.field == "script_variable" and "/script_var_" in entry.id:
-            if entry.context and entry.context.startswith("[SCRIPT_VAR:"):
-                # context = "[SCRIPT_VAR:21:$gameVariables.setValue(21, "text")]"
+            if entry.context and entry.context.startswith("[CONTROL_VAR:"):
+                # Code 122: params[4] = '"original"' → replace with '"translation"'
+                self._replace_control_var_string(data, entry.original, entry.translation)
+            elif entry.context and entry.context.startswith("[SCRIPT_VAR:"):
+                # Code 355/655: inline string replacement
                 self._replace_script_string(data, entry.original, entry.translation)
 
     def _apply_event_translation(self, data, entry: TranslationEntry):
@@ -1662,6 +1692,45 @@ class RPGMakerMVParser:
                         return
         log.warning("Export: MZ plugin %s/%s not matched — original %r",
                     plugin_name, param_key, original[:60])
+
+    def _replace_control_var_string(self, data, original: str, translation: str):
+        """Replace a string literal in Control Variables (code 122) script operand.
+
+        Finds code 122 commands where params[3]==4 (script operand) and
+        params[4] contains the original text as a quoted string literal,
+        then replaces with the translated text.
+        """
+        old_expr = f'"{original}"'
+        new_expr = f'"{translation}"'
+
+        def process_commands(cmd_list):
+            for cmd in cmd_list:
+                if not isinstance(cmd, dict) or cmd.get("code") != CODE_CONTROL_VARIABLES:
+                    continue
+                params = cmd.get("parameters", [])
+                if len(params) >= 5 and params[3] == 4 and params[4] == old_expr:
+                    params[4] = new_expr
+                    return True
+            return False
+
+        if isinstance(data, dict):
+            for event in (data.get("events") or []):
+                if not event or not isinstance(event, dict):
+                    continue
+                for page in (event.get("pages") or []):
+                    if page and isinstance(page, dict):
+                        if process_commands(page.get("list", [])):
+                            return
+            if "list" in data:
+                if process_commands(data.get("list", [])):
+                    return
+        elif isinstance(data, list):
+            for event in data:
+                if event and isinstance(event, dict):
+                    if process_commands(event.get("list", [])):
+                        return
+        log.warning("Export: control var string not matched — original %r",
+                    original[:60])
 
     def _replace_script_string(self, data, original: str, translation: str):
         """Replace a Japanese string inside Script commands (355/655).
