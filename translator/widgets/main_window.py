@@ -232,6 +232,12 @@ class MainWindow(QMainWindow):
         self.save_action.setEnabled(False)
         project_menu.addAction(self.save_action)
 
+        self.save_as_action = QAction("Save State As...", self)
+        self.save_as_action.setShortcut("Ctrl+Shift+S")
+        self.save_as_action.triggered.connect(self._save_state_as)
+        self.save_as_action.setEnabled(False)
+        project_menu.addAction(self.save_as_action)
+
         self.load_action = QAction("Load State...", self)
         self.load_action.setShortcut("Ctrl+L")
         self.load_action.triggered.connect(self._load_state)
@@ -461,6 +467,34 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
+        # Check for existing save state in project folder
+        default_save = os.path.join(path, "_translation_state.json")
+        autosave = os.path.join(path, "_translation_autosave.json")
+        save_path = self._pick_newest_save(default_save, autosave)
+
+        if save_path:
+            reply = QMessageBox.question(
+                self, "Resume Previous Session?",
+                f"Found saved translation state:\n{os.path.basename(save_path)}\n\n"
+                "Load it to resume where you left off?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                if self._restore_from_state(save_path):
+                    self._enable_project_actions()
+                    self.plugin_analyzer.analyze_project(path)
+                    if getattr(self.client, "vision_model", ""):
+                        self.image_panel.set_project(path, self.client)
+                    self.statusbar.showMessage(
+                        f"Resumed: {self.project.total} entries "
+                        f"({self.project.translated_count} translated)", 5000
+                    )
+                    folder = os.path.basename(path)
+                    self.setWindowTitle(f"RPG Maker Translator \u2014 {folder}")
+                    return
+                # Fall through to fresh project on load failure
+
+        # Fresh project — parse game files from scratch
         try:
             entries = self.parser.load_project(path)
         except FileNotFoundError as e:
@@ -496,25 +530,7 @@ class MainWindow(QMainWindow):
         # Analyze plugins for word wrap settings
         self.plugin_analyzer.analyze_project(path)
 
-        self.save_action.setEnabled(True)
-        self.batch_db_action.setEnabled(True)
-        self.batch_dialogue_action.setEnabled(True)
-        self.batch_action.setEnabled(True)
-        self.batch_actor_action.setEnabled(True)
-        self.export_action.setEnabled(True)
-        self.restore_action.setEnabled(True)
-        self.rename_action.setEnabled(True)
-        self.import_action.setEnabled(True)
-        self.txt_export_action.setEnabled(True)
-        self.create_patch_action.setEnabled(True)
-        self.apply_patch_action.setEnabled(True)
-        self.export_zip_action.setEnabled(True)
-        self.wordwrap_action.setEnabled(True)
-        self.fix_codes_action.setEnabled(True)
-        self.polish_action.setEnabled(True)
-        self.apply_glossary_action.setEnabled(True)
-        self.find_replace_action.setEnabled(True)
-        self.translate_images_action.setEnabled(True)
+        self._enable_project_actions()
 
         # Initialize image panel if vision model is set
         if getattr(self.client, "vision_model", ""):
@@ -547,6 +563,14 @@ class MainWindow(QMainWindow):
         # Window title
         folder = os.path.basename(path)
         self.setWindowTitle(f"RPG Maker Translator \u2014 {folder}")
+
+    @staticmethod
+    def _pick_newest_save(*paths: str) -> str | None:
+        """Return the most recently modified path that exists, or None."""
+        candidates = [(p, os.path.getmtime(p)) for p in paths if os.path.isfile(p)]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda x: x[1])[0]
 
     def _pre_translate_info(self, entries, actors_raw):
         """Translate game title + actor names/profiles before the gender dialog.
@@ -871,9 +895,26 @@ class MainWindow(QMainWindow):
                                 f"Could not rename folder:\n{e}")
 
     def _save_state(self):
-        """Save current translation state to a JSON file."""
+        """Save state to default project path (no dialog)."""
+        if not self.project.entries:
+            return
+        if not self._last_save_path:
+            if self.project.project_path:
+                self._last_save_path = os.path.join(
+                    self.project.project_path, "_translation_state.json"
+                )
+            else:
+                self._save_state_as()
+                return
+        self.project.save_state(self._last_save_path)
+        self.statusbar.showMessage(
+            f"Saved to {os.path.basename(self._last_save_path)}", 3000)
+
+    def _save_state_as(self):
+        """Save state with file dialog for custom location."""
+        default_dir = self.project.project_path or ""
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Translation State", "", "JSON Files (*.json)"
+            self, "Save Translation State", default_dir, "JSON Files (*.json)"
         )
         if path:
             self.project.save_state(path)
@@ -881,23 +922,40 @@ class MainWindow(QMainWindow):
             self.statusbar.showMessage(f"State saved to {path}", 3000)
 
     def _load_state(self):
-        """Load a previously saved translation state."""
+        """Load a previously saved translation state via file dialog."""
         path, _ = QFileDialog.getOpenFileName(
             self, "Load Translation State", "", "JSON Files (*.json)"
         )
         if not path:
             return
+        if not self._restore_from_state(path):
+            return
+        self._enable_project_actions()
 
+        # Initialize image panel if vision model is set
+        if self.project.project_path and getattr(self.client, "vision_model", ""):
+            self.image_panel.set_project(self.project.project_path, self.client)
+
+        self.statusbar.showMessage(
+            f"Loaded state: {self.project.total} entries "
+            f"({self.project.translated_count} translated)", 5000
+        )
+        name = os.path.basename(self.project.project_path) if self.project.project_path else "Restored"
+        self.setWindowTitle(f"RPG Maker Translator \u2014 {name}")
+
+    def _restore_from_state(self, path: str) -> bool:
+        """Load a save file and restore full project state.
+
+        Returns True on success, False on error (shows warning dialog).
+        """
         try:
             self.project = TranslationProject.load_state(path)
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to load state:\n{e}")
-            return
+            return False
 
         self.file_tree.load_project(self.project)
         self.trans_table.set_entries(self.project.entries)
-
-        # Restore glossary: merge general (global) + project (per-game)
         self._rebuild_glossary()
 
         # Restore actor context from saved genders (skip dialog on next batch)
@@ -913,18 +971,22 @@ class MainWindow(QMainWindow):
         else:
             self._actors_ready = False
 
-        # Backfill auto-glossary for all DB name fields if missing
-        # (for projects saved before this feature existed)
         self._backfill_db_glossary()
+        self._last_save_path = path
+        return True
 
+    def _enable_project_actions(self):
+        """Enable all project-dependent menu actions."""
+        has_path = bool(self.project.project_path)
         self.save_action.setEnabled(True)
+        self.save_as_action.setEnabled(True)
         self.batch_db_action.setEnabled(True)
         self.batch_dialogue_action.setEnabled(True)
         self.batch_action.setEnabled(True)
         self.batch_actor_action.setEnabled(True)
-        self.export_action.setEnabled(bool(self.project.project_path))
-        self.restore_action.setEnabled(bool(self.project.project_path))
-        self.rename_action.setEnabled(bool(self.project.project_path))
+        self.export_action.setEnabled(has_path)
+        self.restore_action.setEnabled(has_path)
+        self.rename_action.setEnabled(has_path)
         self.import_action.setEnabled(True)
         self.txt_export_action.setEnabled(True)
         self.create_patch_action.setEnabled(True)
@@ -936,17 +998,6 @@ class MainWindow(QMainWindow):
         self.apply_glossary_action.setEnabled(True)
         self.find_replace_action.setEnabled(True)
         self.translate_images_action.setEnabled(True)
-
-        # Initialize image panel if vision model is set
-        if self.project.project_path and getattr(self.client, "vision_model", ""):
-            self.image_panel.set_project(self.project.project_path, self.client)
-
-        self.statusbar.showMessage(
-            f"Loaded state: {self.project.total} entries "
-            f"({self.project.translated_count} translated)", 5000
-        )
-        name = os.path.basename(self.project.project_path) if self.project.project_path else "Restored"
-        self.setWindowTitle(f"RPG Maker Translator — {name}")
 
     def _import_translations(self):
         """Import translations from an older version's save state."""
@@ -1310,7 +1361,7 @@ class MainWindow(QMainWindow):
             # Auto-save next to project if possible
             if self.project.project_path:
                 self._last_save_path = os.path.join(
-                    self.project.project_path, "_translation_autosave.json"
+                    self.project.project_path, "_translation_state.json"
                 )
             else:
                 return
