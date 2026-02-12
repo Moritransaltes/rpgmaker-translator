@@ -1700,17 +1700,20 @@ class RPGMakerMVParser:
 
     INJECTED_PLUGIN_NAME = "TranslatorWordWrap"
 
-    def inject_wordwrap_plugin(self, project_dir: str):
+    def inject_wordwrap_plugin(self, project_dir: str) -> bool:
         """Write TranslatorWordWrap.js and register it in plugins.js.
 
         Called during export when no existing word wrap plugin was detected
         and the user chose to inject one.
+
+        Returns True if injection succeeded, False otherwise.
         """
         from .text_processor import WORDWRAP_PLUGIN_JS
 
         plugins_path = self._find_plugins_file(project_dir)
         if not plugins_path:
-            return
+            log.warning("inject_wordwrap_plugin: plugins.js not found in %s", project_dir)
+            return False
 
         # Write the JS file next to plugins.js (js/plugins/ folder)
         js_dir = os.path.dirname(plugins_path)
@@ -1725,13 +1728,14 @@ class RPGMakerMVParser:
         # params to it — reading from backup would overwrite those.
         try:
             plugins = self._load_plugins_js(plugins_path)
-        except (json.JSONDecodeError, OSError):
-            return
+        except (json.JSONDecodeError, OSError) as e:
+            log.warning("inject_wordwrap_plugin: failed to parse %s: %s", plugins_path, e)
+            return False
 
         # Don't duplicate if already present
         if any(p.get("name") == self.INJECTED_PLUGIN_NAME for p in plugins):
-            self._write_plugins_js(plugins_path, plugins)
-            return
+            log.info("inject_wordwrap_plugin: already present in plugins.js")
+            return True
 
         plugins.append({
             "name": self.INJECTED_PLUGIN_NAME,
@@ -1740,6 +1744,9 @@ class RPGMakerMVParser:
             "parameters": {},
         })
         self._write_plugins_js(plugins_path, plugins)
+        log.info("inject_wordwrap_plugin: added to %s (%d plugins total)",
+                 plugins_path, len(plugins))
+        return True
 
     def remove_wordwrap_plugin(self, project_dir: str):
         """Remove the injected word wrap plugin (cleanup during restore)."""

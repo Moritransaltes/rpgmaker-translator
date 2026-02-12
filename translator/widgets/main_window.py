@@ -1627,8 +1627,12 @@ class MainWindow(QMainWindow):
                     for e in translated
                 )
             if needs_inject:
-                self.parser.inject_wordwrap_plugin(self.project.project_path)
-                plugin_msg = "\nWord wrap plugin (TranslatorWordWrap.js) injected."
+                if self.parser.inject_wordwrap_plugin(self.project.project_path):
+                    plugin_msg = "\nWord wrap plugin (TranslatorWordWrap.js) injected."
+                else:
+                    plugin_msg = ("\nWARNING: Could not inject word wrap plugin — "
+                                  "js/plugins.js not found. <WordWrap> tags will "
+                                  "show as raw text. Use Strip Word Wrap Tags to remove.")
             QMessageBox.information(
                 self, "Export Complete",
                 f"Exported {len(translated)} translations to game files.\n"
