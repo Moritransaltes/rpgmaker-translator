@@ -1158,6 +1158,8 @@ class MainWindow(QMainWindow):
 
     def _on_batch_finished(self):
         """Handle batch translation/polish completing."""
+        # Final pass: restore any control codes the LLM dropped
+        codes_fixed = self._restore_missing_codes()
         self.batch_db_action.setEnabled(True)
         self.batch_dialogue_action.setEnabled(True)
         self.batch_action.setEnabled(True)
@@ -1167,13 +1169,15 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.progress_label.setText("")
         self.file_tree.refresh_stats(self.project)
-        self.statusbar.showMessage(
-            f"Batch complete — {self.project.translated_count}/{self.project.total} translated",
-            5000,
-        )
+        msg = f"Batch complete — {self.project.translated_count}/{self.project.total} translated"
+        if codes_fixed:
+            msg += f" ({codes_fixed} control codes restored)"
+        self.statusbar.showMessage(msg, 8000)
 
     def _on_checkpoint(self):
         """Auto-save during batch translation (every 25 entries)."""
+        # Auto-fix dropped control codes before saving
+        self._restore_missing_codes()
         self._autosave()
         # Run translation memory to fill duplicates from newly translated entries
         tm_count = self._run_translation_memory()
@@ -1724,15 +1728,20 @@ class MainWindow(QMainWindow):
 
     # ── Fix Missing Codes ─────────────────────────────────────────
 
-    def _fix_missing_codes(self):
-        """Batch-fix all translated entries that have missing control codes.
+    def _restore_missing_codes(self) -> int:
+        """Silently restore missing control codes in all translated entries.
 
         Scans every translated entry, compares control codes in the original
         to the translation, and auto-inserts any missing codes at the
         position they occupied in the original (start → prepend, end → append).
+
+        Called automatically at each checkpoint and batch finish, so the LLM
+        never needs to be re-invoked for dropped codes.
+
+        Returns the number of entries fixed.
         """
         if not self.project.entries:
-            return
+            return 0
 
         from ..ollama_client import _CONTROL_CODE_RE
 
@@ -1777,8 +1786,13 @@ class MainWindow(QMainWindow):
                 entry.translation = new_translation
                 fixed += 1
 
+        return fixed
+
+    def _fix_missing_codes(self):
+        """Manual menu action — runs _restore_missing_codes() with a result dialog."""
+        fixed = self._restore_missing_codes()
+
         if fixed:
-            # Refresh table
             self.trans_table.refresh()
             self.file_tree.refresh_stats(self.project)
 
