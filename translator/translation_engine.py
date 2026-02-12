@@ -78,7 +78,14 @@ class TranslationWorker(QObject):
 
 
 class BatchTranslationWorker(QObject):
-    """Worker that translates entries in JSON batches with single-entry fallback."""
+    """Worker that translates entries in JSON batches with single-entry fallback.
+
+    DEPRECATED: Batch JSON mode tested with Sugoi Ultra 14B and Qwen3-14B —
+    quality noticeably worse than single-entry.  Local models' small context
+    windows (~4K tokens) can't handle system prompt + glossary + N entries
+    well.  Kept for potential future use with larger cloud models.
+    Use batch_size=1 (single-entry via TranslationWorker) for best results.
+    """
 
     entry_done = pyqtSignal(str, str)       # entry_id, translation
     item_processed = pyqtSignal(str)        # text preview (for progress tracking)
@@ -231,7 +238,7 @@ class TranslationEngine(QObject):
         super().__init__(parent)
         self.client = client
         self.num_workers = 2
-        self.batch_size = 1  # entries per JSON batch (1 = single-entry, >1 = useful for cloud APIs)
+        self.batch_size = 1  # entries per JSON batch (1 = recommended; >1 deprecated — quality degrades on local models)
         self.max_history = 10  # translation history window (0 = disabled)
         self._threads = []
         self._workers = []

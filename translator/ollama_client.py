@@ -821,7 +821,13 @@ class OllamaClient:
         except requests.RequestException:
             return text  # Keep original on error
 
-    # ── Batch JSON translation ─────────────────────────────────
+    # ── Batch JSON translation (DEPRECATED) ─────────────────────
+    # Tested with Sugoi Ultra 14B and Qwen3-14B — quality degrades noticeably
+    # when packing multiple lines into one request.  Local 14B models have
+    # tight context windows (~4096 tokens) and lose per-line nuance when
+    # sharing system prompt / glossary / actor context across N entries.
+    # Single-entry translation (batch_size=1) produces consistently better
+    # results.  Code kept for potential future use with larger cloud models.
 
     # Regex for extracting a JSON object from LLM response that may have
     # markdown fences or preamble text around it.
