@@ -278,6 +278,17 @@ class MainWindow(QMainWindow):
         self.import_folder_action.setEnabled(False)
         project_menu.addAction(self.import_folder_action)
 
+        self.scan_glossary_action = QAction(
+            "Scan Translated Game for Glossary...", self)
+        self.scan_glossary_action.setToolTip(
+            "Open a translated game folder and harvest JP→EN pairs "
+            "to add to your general glossary"
+        )
+        self.scan_glossary_action.triggered.connect(
+            self._scan_game_for_glossary)
+        self.scan_glossary_action.setEnabled(False)
+        project_menu.addAction(self.scan_glossary_action)
+
         # ── Translate menu ────────────────────────────────────────
         translate_menu = menubar.addMenu("Translate")
 
@@ -355,6 +366,17 @@ class MainWindow(QMainWindow):
         self.apply_glossary_action.triggered.connect(self._apply_glossary)
         self.apply_glossary_action.setEnabled(False)
         translate_menu.addAction(self.apply_glossary_action)
+
+        self.scan_project_glossary_action = QAction(
+            "Harvest Glossary from Project", self)
+        self.scan_project_glossary_action.setToolTip(
+            "Scan this project's translations for terms to add "
+            "to your general glossary"
+        )
+        self.scan_project_glossary_action.triggered.connect(
+            self._scan_project_for_glossary)
+        self.scan_project_glossary_action.setEnabled(False)
+        translate_menu.addAction(self.scan_project_glossary_action)
 
         self.consistency_action = QAction("Consistency Pass", self)
         self.consistency_action.setShortcut("Ctrl+Shift+C")
@@ -1047,6 +1069,7 @@ class MainWindow(QMainWindow):
         self.rename_action.setEnabled(has_path)
         self.import_action.setEnabled(True)
         self.import_folder_action.setEnabled(True)
+        self.scan_glossary_action.setEnabled(True)
         self.txt_export_action.setEnabled(True)
         self.create_patch_action.setEnabled(True)
         self.apply_patch_action.setEnabled(True)
@@ -1055,6 +1078,7 @@ class MainWindow(QMainWindow):
         self.fix_codes_action.setEnabled(True)
         self.polish_action.setEnabled(True)
         self.apply_glossary_action.setEnabled(True)
+        self.scan_project_glossary_action.setEnabled(True)
         self.consistency_action.setEnabled(True)
         self.find_replace_action.setEnabled(True)
         self.translate_images_action.setEnabled(True)
@@ -1179,6 +1203,191 @@ class MainWindow(QMainWindow):
             f"  \u2022 {stats['identical']} identical (not translated in donor)\n"
             f"  \u2022 {stats['new']} new entries in v1.2 (need translation)\n"
             f"  \u2022 {stats['skipped']} already translated (kept)\n"
+        )
+
+    # ── Glossary scan from translated game ─────────────────────────
+
+    # Fields worth harvesting as glossary terms (short names / labels)
+    _GLOSSARY_SCAN_FIELDS = {
+        "Actors.json": ("name", "nickname"),
+        "Classes.json": ("name",),
+        "Items.json": ("name",),
+        "Weapons.json": ("name",),
+        "Armors.json": ("name",),
+        "Skills.json": ("name",),
+        "Enemies.json": ("name",),
+        "States.json": ("name",),
+        "System.json": ("terms",),
+    }
+
+    def _scan_game_for_glossary(self):
+        """Scan a translated game folder and harvest JP→EN pairs for glossary."""
+        if not self.project:
+            return
+
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Translated Game Folder"
+        )
+        if not folder:
+            return
+
+        from ..rpgmaker_mv import RPGMakerMVParser, _has_japanese
+
+        parser = RPGMakerMVParser()
+        try:
+            donor_entries = parser.load_project_raw(folder)
+        except FileNotFoundError as e:
+            QMessageBox.warning(self, "Error", str(e))
+            return
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Error", f"Failed to parse game folder:\n{e}")
+            return
+
+        if not donor_entries:
+            QMessageBox.warning(
+                self, "No Entries",
+                "No text entries found in that game folder."
+            )
+            return
+
+        # Build lookup from current project: entry_id → JP original
+        jp_by_id = {e.id: e.original for e in self.project.entries}
+
+        # Match donor entries against project entries to find JP→EN pairs
+        candidates = []
+        seen = set()
+        for donor in donor_entries:
+            jp_text = jp_by_id.get(donor.id)
+            if not jp_text:
+                continue
+            en_text = donor.original  # "original" in raw parse = the EN text
+            if not en_text or not jp_text:
+                continue
+            jp_text = jp_text.strip()
+            en_text = en_text.strip()
+            if not jp_text or not en_text:
+                continue
+            # Skip if identical (wasn't translated)
+            if jp_text == en_text:
+                continue
+            # JP must contain Japanese, EN must not
+            if not _has_japanese(jp_text) or _has_japanese(en_text):
+                continue
+            # Filter to glossary-worthy entries: DB name fields or short text
+            is_db_field = False
+            fields = self._GLOSSARY_SCAN_FIELDS.get(donor.file)
+            if fields and donor.field in fields:
+                is_db_field = True
+            is_map_name = (
+                donor.file.startswith("Map") and donor.file.endswith(".json")
+                and donor.field == "displayName"
+            )
+            # Accept DB name fields, map names, or any short entry
+            if not is_db_field and not is_map_name and len(jp_text) > 40:
+                continue
+            # Skip if already in general glossary
+            if jp_text in self._general_glossary:
+                continue
+            # Deduplicate
+            if jp_text in seen:
+                continue
+            seen.add(jp_text)
+            candidates.append((jp_text, en_text))
+
+        if not candidates:
+            QMessageBox.information(
+                self, "No New Terms",
+                "No new glossary candidates found.\n"
+                "All matching terms are already in your general glossary."
+            )
+            return
+
+        from .glossary_scan_dialog import GlossaryScanDialog
+
+        dlg = GlossaryScanDialog(candidates, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        selected = dlg.selected_pairs()
+        if not selected:
+            return
+
+        # Add to general glossary
+        for jp, en in selected:
+            self._general_glossary[jp] = en
+
+        self._rebuild_glossary()
+        self._save_settings()
+
+        QMessageBox.information(
+            self, "Glossary Updated",
+            f"Added {len(selected)} terms to your general glossary."
+        )
+
+    def _scan_project_for_glossary(self):
+        """Scan current project's translations for glossary candidates."""
+        if not self.project:
+            return
+
+        from ..rpgmaker_mv import _has_japanese
+
+        candidates = []
+        seen = set()
+        for e in self.project.entries:
+            if e.status not in ("translated", "reviewed"):
+                continue
+            jp = e.original.strip()
+            en = e.translation.strip() if e.translation else ""
+            if not jp or not en or jp == en:
+                continue
+            if not _has_japanese(jp) or _has_japanese(en):
+                continue
+            # DB name fields, map names, or short text
+            is_db_field = False
+            fields = self._GLOSSARY_SCAN_FIELDS.get(e.file)
+            if fields and e.field in fields:
+                is_db_field = True
+            is_map_name = (
+                e.file.startswith("Map") and e.file.endswith(".json")
+                and e.field == "displayName"
+            )
+            if not is_db_field and not is_map_name and len(jp) > 40:
+                continue
+            if jp in self._general_glossary:
+                continue
+            if jp in seen:
+                continue
+            seen.add(jp)
+            candidates.append((jp, en))
+
+        if not candidates:
+            QMessageBox.information(
+                self, "No New Terms",
+                "No new glossary candidates found.\n"
+                "All qualifying terms are already in your general glossary."
+            )
+            return
+
+        from .glossary_scan_dialog import GlossaryScanDialog
+
+        dlg = GlossaryScanDialog(candidates, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        selected = dlg.selected_pairs()
+        if not selected:
+            return
+
+        for jp, en in selected:
+            self._general_glossary[jp] = en
+
+        self._rebuild_glossary()
+        self._save_settings()
+
+        QMessageBox.information(
+            self, "Glossary Updated",
+            f"Added {len(selected)} terms to your general glossary."
         )
 
     def _stop_translation(self):
