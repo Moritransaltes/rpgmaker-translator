@@ -1319,11 +1319,10 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return False
 
-        added = 0
+        # Replace project glossary with vocab terms
+        self.project.glossary.clear()
         for jp, en in glossary.items():
-            if jp not in self.project.glossary:
-                self.project.glossary[jp] = en
-                added += 1
+            self.project.glossary[jp] = en
 
         # Store gender info for actor detection
         if genders:
@@ -1336,7 +1335,7 @@ class MainWindow(QMainWindow):
                 self._vocab_genders[en_name] = gender
 
         self.statusbar.showMessage(
-            f"Loaded {added} glossary terms from vocab.txt"
+            f"Replaced project glossary with {len(glossary)} vocab terms"
             + (f" + {len(genders)} genders" if genders else ""),
             5000,
         )
