@@ -2131,12 +2131,13 @@ class MainWindow(QMainWindow):
                     game_title = e.original
                     break
 
-        # Default filename
+        # Default filename — prefer English game title, fall back to folder name
         safe_title = "".join(
             c for c in game_title if c.isalnum() or c in " _-"
         )[:50].strip()
-        default_name = (f"{safe_title} English.zip"
-                        if safe_title else "english_translation.zip")
+        if not safe_title:
+            safe_title = os.path.basename(self.project.project_path)
+        default_name = f"{safe_title} ENG Translation Patch.zip"
 
         path, _ = QFileDialog.getSaveFileName(
             self, "Export Patch Zip", default_name, "Zip Files (*.zip)"
