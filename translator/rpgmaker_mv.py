@@ -1836,8 +1836,8 @@ class RPGMakerMVParser:
         params[4] contains the original text as a quoted string literal,
         then replaces with the translated text.
         """
-        old_expr = f'"{original}"'
-        new_expr = f'"{translation}"'
+        old_expr = json.dumps(original)   # proper escaping of quotes/backslashes
+        new_expr = json.dumps(translation)
 
         def process_commands(cmd_list):
             for cmd in cmd_list:
@@ -2345,7 +2345,7 @@ class RPGMakerMVParser:
             if not isinstance(obj, dict) or segment not in obj:
                 return
             if is_last:
-                if obj[segment] == original:
+                if isinstance(obj[segment], str) and obj[segment] == original:
                     obj[segment] = translation
             else:
                 val = obj[segment]

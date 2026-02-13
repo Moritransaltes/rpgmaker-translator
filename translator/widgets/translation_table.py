@@ -1103,7 +1103,16 @@ class TranslationTable(QWidget):
 
     def _select_entry_by_id(self, entry_id: str):
         """Select and scroll to an entry by ID in the visible table."""
-        # Temporarily clear file filter to show all entries
+        # First try to find in current visible entries
+        for row, entry in enumerate(self._visible_entries):
+            if entry.id == entry_id:
+                index = self._model.index(row, 0)
+                self.table.setCurrentIndex(index)
+                self.table.scrollTo(index)
+                return
+
+        # Not visible — temporarily clear file filter, find, then restore
+        prev_entries = self._entries
         self._entries = self._all_entries
         self._apply_filter()
 
@@ -1113,6 +1122,10 @@ class TranslationTable(QWidget):
                 self.table.setCurrentIndex(index)
                 self.table.scrollTo(index)
                 return
+
+        # Entry not found — restore previous filter
+        self._entries = prev_entries
+        self._apply_filter()
 
     def _update_stats(self):
         """Update the stats label."""

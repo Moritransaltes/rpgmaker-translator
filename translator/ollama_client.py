@@ -576,7 +576,7 @@ class OllamaClient:
         if not speaker:
             return ""
         for actor_id, name in self.actor_names.items():
-            if name == speaker or speaker == name:
+            if name.lower() == speaker.lower():
                 gender = self.actor_genders.get(actor_id, "")
                 if gender == "female":
                     return (
@@ -679,11 +679,9 @@ class OllamaClient:
             result = self._restore_codes(result, code_map)
         # Fix contraction spacing artifacts (I 've → I've, Couldn' t → Couldn't)
         result = self._CONTRACTION_RE.sub(r"\1\2\3", result)
-        # Strip outer quotes if LLM wrapped the translation in them
-        first = result.find('"')
-        last = result.rfind('"')
-        if first != -1 and last > first:
-            result = result[:first] + result[first + 1:last] + result[last + 1:]
+        # Strip outer quotes if LLM wrapped the entire translation in them
+        if result.startswith('"') and result.endswith('"') and len(result) > 1:
+            result = result[1:-1]
         return result
 
     # Human-readable labels for RPG Maker entry field types
