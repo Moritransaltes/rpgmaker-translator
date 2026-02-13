@@ -185,6 +185,17 @@ class SettingsDialog(QDialog):
         )
         opts_form.addRow("Word wrap chars/line:", self.wordwrap_spin)
 
+        self.single_401_check = QCheckBox("Merge dialogue into single 401 command")
+        self.single_401_check.setToolTip(
+            "On export, merge all dialogue lines into a single 401 event\n"
+            "command with embedded newlines, instead of one 401 per line.\n\n"
+            "Enable this if your game has an auto-advance plugin that\n"
+            "paginates after every 4 consecutive 401 commands.\n"
+            "With this on, you can manually control pagination by\n"
+            "inserting \\! (wait for input) codes in the translation."
+        )
+        opts_form.addRow(self.single_401_check)
+
         layout.addWidget(opts_group)
 
         # Appearance
@@ -248,6 +259,8 @@ class SettingsDialog(QDialog):
             self.wordwrap_spin.setValue(self.plugin_analyzer._manual_chars_per_line)
         else:
             self.wordwrap_spin.setValue(0)
+        self.single_401_check.setChecked(
+            self.parser.single_401_mode if self.parser else False)
         self.dark_mode_check.setChecked(self.dark_mode)
         self.script_strings_check.setChecked(
             self.parser.extract_script_strings if self.parser else False
@@ -431,6 +444,7 @@ class SettingsDialog(QDialog):
         self.dark_mode = self.dark_mode_check.isChecked()
         if self.parser:
             self.parser.extract_script_strings = self.script_strings_check.isChecked()
+            self.parser.single_401_mode = self.single_401_check.isChecked()
         self.accept()
 
     def _restart_ollama(self, num_parallel: int):

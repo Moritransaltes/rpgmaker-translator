@@ -111,6 +111,57 @@ QSplitter::handle {
 QLabel {
     color: #cdd6f4;
 }
+QMessageBox {
+    background-color: #1e1e2e;
+}
+QMessageBox QLabel {
+    color: #cdd6f4;
+    min-width: 320px;
+}
+QMessageBox QPushButton {
+    background-color: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    padding: 6px 24px;
+    min-width: 80px;
+    border-radius: 3px;
+}
+QMessageBox QPushButton:hover {
+    background-color: #45475a;
+}
+QMessageBox QPushButton:default {
+    border: 1px solid #89b4fa;
+    color: #89b4fa;
+}
+QInputDialog {
+    background-color: #1e1e2e;
+    color: #cdd6f4;
+}
+QTextEdit {
+    background-color: #181825;
+    color: #cdd6f4;
+    border: 1px solid #313244;
+    selection-background-color: #45475a;
+}
+QCheckBox {
+    color: #cdd6f4;
+    spacing: 6px;
+}
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #45475a;
+    border-radius: 3px;
+    background-color: #181825;
+}
+QCheckBox::indicator:checked {
+    background-color: #89b4fa;
+    border-color: #89b4fa;
+}
+QDialogButtonBox QPushButton {
+    padding: 6px 24px;
+    min-width: 80px;
+}
 """
 
 from ..ollama_client import OllamaClient
@@ -2321,6 +2372,8 @@ class MainWindow(QMainWindow):
             self.client.vision_model = cfg["vision_model"]
         if "extract_script_strings" in cfg:
             self.parser.extract_script_strings = cfg["extract_script_strings"]
+        if "single_401_mode" in cfg:
+            self.parser.single_401_mode = cfg["single_401_mode"]
 
     def _save_settings(self):
         """Persist current settings to _settings.json."""
@@ -2338,6 +2391,7 @@ class MainWindow(QMainWindow):
             "target_language": self.client.target_language,
             "vision_model": getattr(self.client, "vision_model", ""),
             "extract_script_strings": self.parser.extract_script_strings,
+            "single_401_mode": self.parser.single_401_mode,
         }
         try:
             with open(self._SETTINGS_FILE, "w", encoding="utf-8") as f:
@@ -2786,14 +2840,40 @@ class MainWindow(QMainWindow):
         cpl = self.plugin_analyzer.chars_per_line
         summary = self.plugin_analyzer.get_summary()
 
-        reply = QMessageBox.question(
-            self, "Apply Word Wrap",
+        from PyQt6.QtWidgets import QCheckBox, QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Apply Word Wrap")
+        dlg.setMinimumWidth(420)
+        layout = QVBoxLayout(dlg)
+
+        header = QLabel("Word Wrap Settings")
+        header.setStyleSheet("font-size: 15px; font-weight: bold; margin-bottom: 4px;")
+        layout.addWidget(header)
+
+        info = QLabel(
             f"Detected settings:\n\n{summary}\n\n"
-            f"Redistribute text across lines (~{cpl} chars/line)?\n"
-            "Entries that overflow their text box will be flagged.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            f"This will redistribute text across lines (~{cpl} chars/line).\n"
+            "Entries that overflow their text box will be flagged."
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        checkbox = QCheckBox("I understand this will modify my translations")
+        layout.addWidget(checkbox)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok_btn.setText("Apply Word Wrap")
+        ok_btn.setEnabled(False)
+        checkbox.toggled.connect(ok_btn.setEnabled)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
         # Disable plugin injection — manual breaks only

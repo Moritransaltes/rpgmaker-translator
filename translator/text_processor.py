@@ -299,17 +299,33 @@ class TextProcessor:
         return self._apply_manual_wordwrap(translation, orig_line_count)
 
     def _apply_plugin_wordwrap(self, text: str, orig_line_count: int) -> str:
-        """For games with word wrap plugins: add tag, keep within line count."""
+        """For games with word wrap plugins: add tag, keep within line count.
+
+        The in-game word wrap plugin handles visual line breaking, so we
+        just need to fit text into the correct number of 401 commands
+        (= orig_line_count).  If the translation has more newlines than
+        the original, merge overflow into the last slot — the plugin
+        re-wraps it at the message window width.
+        """
         tag = self.analyzer.wordwrap_tag
 
         # Split by existing newlines (which map to 401 command boundaries)
         lines = text.split("\n")
 
-        # Ensure we don't exceed the original line count
+        # Merge overflow lines into the last slot so we stay within
+        # orig_line_count 401 commands.  The word wrap plugin handles
+        # the visual breaking of long lines.
         if len(lines) > orig_line_count:
-            result = lines[:orig_line_count - 1]
-            result.append(" ".join(lines[orig_line_count - 1:]))
-            lines = result
+            keep = lines[:orig_line_count - 1] if orig_line_count > 1 else []
+            merged = " ".join(
+                seg.strip() for seg in lines[len(keep):] if seg.strip()
+            )
+            keep.append(merged)
+            lines = keep
+
+        # Pad with empty lines if fewer
+        while len(lines) < orig_line_count:
+            lines.append("")
 
         # Add word wrap tag to first line if not already present
         if lines and tag and not lines[0].startswith(tag):

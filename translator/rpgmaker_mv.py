@@ -218,6 +218,7 @@ class RPGMakerMVParser:
         self.context_size = 3  # Number of recent dialogue entries for LLM context
         self._require_japanese = True  # False = extract all text (for import)
         self.extract_script_strings = False  # Experimental: extract strings from Script (355/655)
+        self.single_401_mode = False  # Merge all dialogue lines into one 401 command
 
     def _should_extract(self, text: str) -> bool:
         """Check if text should be extracted as a translatable entry."""
@@ -1387,6 +1388,7 @@ class RPGMakerMVParser:
         code_dialog = CODE_SHOW_TEXT
         code_scroll = CODE_SCROLL_TEXT
         code_choice = CODE_SHOW_CHOICES
+        single_401 = self.single_401_mode
 
         def process_commands(cmd_list):
             i = 0
@@ -1419,24 +1421,32 @@ class RPGMakerMVParser:
                                     match = False
                                     break
                             if match:
-                                # Replace text in existing 401 commands
-                                for j in range(len(ol)):
-                                    cmd_list[i + j]["parameters"][0] = tl[j]
-                                # Insert extra 401 commands for overflow
-                                extra = tl[len(ol):]
-                                if extra:
-                                    indent = cmd_list[i].get("indent", 0)
-                                    ins = i + len(ol)
-                                    for k, et in enumerate(extra):
-                                        cmd_list.insert(ins + k, {
-                                            "code": code_dialog,
-                                            "indent": indent,
-                                            "parameters": [et],
-                                        })
+                                if single_401:
+                                    # Merge all lines into first 401
+                                    cmd_list[i]["parameters"][0] = "\n".join(tl)
+                                    # Remove remaining original 401s
+                                    del cmd_list[i + 1:i + len(ol)]
+                                    advance = 1
+                                else:
+                                    # Replace text in existing 401 commands
+                                    for j in range(len(ol)):
+                                        cmd_list[i + j]["parameters"][0] = tl[j]
+                                    # Insert extra 401 commands for overflow
+                                    extra = tl[len(ol):]
+                                    if extra:
+                                        indent = cmd_list[i].get("indent", 0)
+                                        ins = i + len(ol)
+                                        for k, et in enumerate(extra):
+                                            cmd_list.insert(ins + k, {
+                                                "code": code_dialog,
+                                                "indent": indent,
+                                                "parameters": [et],
+                                            })
+                                    advance = len(ol) + len(extra)
                                 del candidates[idx]
                                 if not candidates:
                                     del dialog_lookup[first_text]
-                                i += len(ol) + len(extra)
+                                i += advance
                                 applied = True
                                 break
                         if not applied:
@@ -1466,22 +1476,28 @@ class RPGMakerMVParser:
                                     match = False
                                     break
                             if match:
-                                for j in range(len(ol)):
-                                    cmd_list[i + j]["parameters"][0] = tl[j]
-                                extra = tl[len(ol):]
-                                if extra:
-                                    indent = cmd_list[i].get("indent", 0)
-                                    ins = i + len(ol)
-                                    for k, et in enumerate(extra):
-                                        cmd_list.insert(ins + k, {
-                                            "code": code_scroll,
-                                            "indent": indent,
-                                            "parameters": [et],
-                                        })
+                                if single_401:
+                                    cmd_list[i]["parameters"][0] = "\n".join(tl)
+                                    del cmd_list[i + 1:i + len(ol)]
+                                    advance = 1
+                                else:
+                                    for j in range(len(ol)):
+                                        cmd_list[i + j]["parameters"][0] = tl[j]
+                                    extra = tl[len(ol):]
+                                    if extra:
+                                        indent = cmd_list[i].get("indent", 0)
+                                        ins = i + len(ol)
+                                        for k, et in enumerate(extra):
+                                            cmd_list.insert(ins + k, {
+                                                "code": code_scroll,
+                                                "indent": indent,
+                                                "parameters": [et],
+                                            })
+                                    advance = len(ol) + len(extra)
                                 del candidates[idx]
                                 if not candidates:
                                     del scroll_lookup[first_text]
-                                i += len(ol) + len(extra)
+                                i += advance
                                 applied = True
                                 break
                         if not applied:
@@ -1515,9 +1531,16 @@ class RPGMakerMVParser:
             if "list" in data:
                 process_commands(data.get("list", []))
         elif isinstance(data, list):
-            for event in data:
-                if event and isinstance(event, dict):
-                    process_commands(event.get("list", []))
+            for item in data:
+                if not item or not isinstance(item, dict):
+                    continue
+                # CommonEvents — top-level "list"
+                if item.get("list"):
+                    process_commands(item.get("list", []))
+                # Troops — pages with nested "list"
+                for page in (item.get("pages") or []):
+                    if page and isinstance(page, dict):
+                        process_commands(page.get("list", []))
 
     def _apply_translation(self, data, entry: TranslationEntry):
         """Apply a single translation back into the loaded JSON data."""
