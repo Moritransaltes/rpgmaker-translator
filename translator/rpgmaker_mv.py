@@ -35,14 +35,14 @@ CODE_SCRIPT_CONT = 655        # Script (continuation) — params[0]=JS code
 
 # Database files and their translatable fields
 DATABASE_FILES = {
-    "Actors.json":   ["name", "nickname", "profile", "note"],
-    "Classes.json":  ["name", "note"],
-    "Items.json":    ["name", "description", "note"],
-    "Weapons.json":  ["name", "description", "note"],
-    "Armors.json":   ["name", "description", "note"],
-    "Skills.json":   ["name", "description", "message1", "message2", "note"],
-    "States.json":   ["name", "message1", "message2", "message3", "message4", "note"],
-    "Enemies.json":  ["name", "note"],
+    "Actors.json":   ["name", "nickname", "profile"],
+    "Classes.json":  ["name"],
+    "Items.json":    ["name", "description"],
+    "Weapons.json":  ["name", "description"],
+    "Armors.json":   ["name", "description"],
+    "Skills.json":   ["name", "description", "message1", "message2"],
+    "States.json":   ["name", "message1", "message2", "message3", "message4"],
+    "Enemies.json":  ["name"],
     "Troops.json":   ["name"],
 }
 
@@ -1520,16 +1520,55 @@ class RPGMakerMVParser:
 
         text_map = {}
 
+        # Process database fields (names, descriptions — stable IDs)
+        self._align_database(donor_data, proj_data, text_map)
+
         # Process CommonEvents
         self._align_common_events(donor_data, proj_data, text_map)
 
-        # Process Maps
+        # Process Maps (includes displayNames)
         self._align_maps(donor_data, proj_data, text_map)
 
         # Process Troops
         self._align_troops(donor_data, proj_data, text_map)
 
         return text_map
+
+    def _align_database(self, donor_data: str, proj_data: str,
+                        text_map: dict):
+        """Align database files (Actors, Items, etc.) between donor and project."""
+        for filename, fields in DATABASE_FILES.items():
+            d_path = os.path.join(donor_data, filename)
+            p_path = os.path.join(proj_data, filename)
+            if not os.path.exists(d_path) or not os.path.exists(p_path):
+                continue
+
+            with open(d_path, "r", encoding="utf-8") as f:
+                d_data = json.load(f)
+            with open(p_path, "r", encoding="utf-8") as f:
+                p_data = json.load(f)
+
+            if not isinstance(d_data, list) or not isinstance(p_data, list):
+                continue
+
+            # Build donor lookup by item ID
+            d_by_id = {}
+            for item in d_data:
+                if isinstance(item, dict):
+                    d_by_id[item.get("id", 0)] = item
+
+            for item in p_data:
+                if not isinstance(item, dict):
+                    continue
+                d_item = d_by_id.get(item.get("id", 0))
+                if not d_item:
+                    continue
+                for fld in fields:
+                    p_val = item.get(fld, "")
+                    d_val = d_item.get(fld, "")
+                    if (p_val and d_val and isinstance(p_val, str)
+                            and isinstance(d_val, str) and p_val != d_val):
+                        text_map[p_val] = d_val
 
     def _align_common_events(self, donor_data: str, proj_data: str,
                              text_map: dict):
@@ -1580,6 +1619,12 @@ class RPGMakerMVParser:
 
             if not isinstance(d_map, dict) or not isinstance(p_map, dict):
                 continue
+
+            # Map displayName (top-level property, not inside events)
+            p_dn = p_map.get("displayName", "")
+            d_dn = d_map.get("displayName", "")
+            if p_dn and d_dn and p_dn != d_dn:
+                text_map[p_dn] = d_dn
 
             # Build event lookup by ID for both
             d_events = {}
