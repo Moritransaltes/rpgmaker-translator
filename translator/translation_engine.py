@@ -6,7 +6,7 @@ import requests
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
-from .ollama_client import OllamaClient
+from .ai_client import AIClient
 from .project_model import TranslationEntry
 
 log = logging.getLogger(__name__)
@@ -20,7 +20,7 @@ class TranslationWorker(QObject):
     finished = pyqtSignal()
     error = pyqtSignal(str, str)            # entry_id, error_message
 
-    def __init__(self, client: OllamaClient, entries: list,
+    def __init__(self, client: AIClient, entries: list,
                  mode: str = "translate", max_history: int = 10):
         super().__init__()
         self.client = client
@@ -94,7 +94,7 @@ class BatchTranslationWorker(QObject):
 
     MAX_RETRIES = 2
 
-    def __init__(self, client: OllamaClient, entries: list,
+    def __init__(self, client: AIClient, entries: list,
                  mode: str = "translate", batch_size: int = 5,
                  max_history: int = 10):
         super().__init__()
@@ -234,7 +234,7 @@ class TranslationEngine(QObject):
 
     CHECKPOINT_INTERVAL = 25  # auto-save every N translated entries
 
-    def __init__(self, client: OllamaClient, parent=None):
+    def __init__(self, client: AIClient, parent=None):
         super().__init__(parent)
         self.client = client
         self.num_workers = 2

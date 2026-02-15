@@ -21,3 +21,9 @@ build/
 
 # Translation state files
 *_translation_autosave.json
+
+# Reference materials (DazedMTL source, dummy projects, etc.)
+_reference/
+
+# Settings (contains API keys)
+_settings.json

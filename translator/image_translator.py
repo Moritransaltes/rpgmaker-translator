@@ -218,7 +218,7 @@ class ImageTranslator:
         Args:
             ollama_url: Ollama base URL (e.g. http://localhost:11434).
             vision_model: Name of the vision model (e.g. qwen3-vl:8b).
-            text_client: An OllamaClient instance for text translation (Sugoi/Qwen3).
+            text_client: An AIClient instance for text translation (Sugoi/Qwen3).
             encryption_key: RPG Maker MV/MZ encryption key (hex string from System.json).
         """
         self.ollama_url = ollama_url.rstrip("/")

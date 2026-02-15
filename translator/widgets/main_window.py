@@ -166,7 +166,7 @@ QDialogButtonBox QPushButton {
 }
 """
 
-from ..ollama_client import OllamaClient
+from ..ai_client import AIClient
 from ..rpgmaker_mv import RPGMakerMVParser
 from ..project_model import TranslationProject
 from ..translation_engine import TranslationEngine
@@ -221,7 +221,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1200, 700)
 
         # Core objects
-        self.client = OllamaClient()
+        self.client = AIClient()
         self.parser = RPGMakerMVParser()
         self.project = TranslationProject()
         self.engine = TranslationEngine(self.client)
@@ -2316,7 +2316,11 @@ class MainWindow(QMainWindow):
         msg = f"Batch complete — {self.project.translated_count}/{self.project.total} translated"
         if codes_fixed:
             msg += f" ({codes_fixed} control codes restored)"
-        self.statusbar.showMessage(msg, 8000)
+        # Show cost for cloud providers
+        cost_str = self.client.format_session_cost()
+        if cost_str:
+            msg += f" | {cost_str}"
+        self.statusbar.showMessage(msg, 15000)
         # After DB batch, warn about name collisions (different JP → same EN)
         if mode in ("db", "all", "dialogue"):
             self._warn_name_collisions()
@@ -2484,6 +2488,14 @@ class MainWindow(QMainWindow):
             self.parser.extract_script_strings = cfg["extract_script_strings"]
         if "single_401_mode" in cfg:
             self.parser.single_401_mode = cfg["single_401_mode"]
+        if "provider" in cfg:
+            self.client.provider = cfg["provider"]
+        if "api_key" in cfg:
+            self.client.api_key = cfg["api_key"]
+        if "prompt_preset" in cfg:
+            self.client._prompt_preset = cfg["prompt_preset"]
+        if "dazed_mode" in cfg:
+            self.client.dazed_mode = cfg["dazed_mode"]
 
     def _save_settings(self):
         """Persist current settings to _settings.json."""
@@ -2491,6 +2503,10 @@ class MainWindow(QMainWindow):
             "ollama_url": self.client.base_url,
             "model": self.client.model,
             "system_prompt": self.client.system_prompt,
+            "provider": self.client.provider,
+            "api_key": self.client.api_key,
+            "prompt_preset": getattr(self.client, "_prompt_preset", "Custom"),
+            "dazed_mode": self.client.dazed_mode,
             "workers": self.engine.num_workers,
             "batch_size": self.engine.batch_size,
             "max_history": self.engine.max_history,
@@ -2554,7 +2570,14 @@ class MainWindow(QMainWindow):
             else:
                 eta_str = f" | ETA: {remaining:.0f}s"
 
-        self.progress_label.setText(f"Translating {effective}/{total}{eta_str}: {text}")
+        # Append running cost for cloud providers
+        cost_str = ""
+        if self.client.is_cloud and self.client.session_cost > 0:
+            cost_str = f" | ${self.client.session_cost:,.4f}"
+
+        self.progress_label.setText(
+            f"Translating {effective}/{total}{eta_str}{cost_str}: {text}"
+        )
 
     # ── Translation memory ─────────────────────────────────────────
 
@@ -2890,6 +2913,10 @@ class MainWindow(QMainWindow):
         self._batch_start_time = time.time()
         self._batch_done_count = 0
         self._tm_checkpoint_count = 0  # TM fills during batch (not counted by engine)
+
+        # Reset cost tracking for this batch
+        if self.client.is_cloud:
+            self.client.reset_session_cost()
 
         self.engine.translate_batch(untranslated)
 

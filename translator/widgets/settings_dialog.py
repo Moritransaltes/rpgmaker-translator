@@ -1,4 +1,4 @@
-"""Settings dialog for configuring Ollama connection and translation options."""
+"""Settings dialog for configuring translation provider and options."""
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
@@ -8,9 +8,11 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
-from ..ollama_client import (
-    OllamaClient, SYSTEM_PROMPT, SUGOI_SYSTEM_PROMPT, TARGET_LANGUAGES,
+from ..ai_client import (
+    AIClient, SYSTEM_PROMPT, SUGOI_SYSTEM_PROMPT, TARGET_LANGUAGES,
     build_system_prompt, is_sugoi_model,
+    PROVIDERS, PROVIDER_MODELS, PROMPT_PRESETS, DAZEDMTL_FULL_PROMPT,
+    get_model_pricing, CLOUD_DEFAULT_WORKERS, LOCAL_DEFAULT_WORKERS,
 )
 from ..rpgmaker_mv import RPGMakerMVParser
 
@@ -33,9 +35,9 @@ class _ModelFetcher(QThread):
 
 
 class SettingsDialog(QDialog):
-    """Dialog for configuring Ollama URL, model, prompt, and options."""
+    """Dialog for configuring translation provider, model, prompt, and options."""
 
-    def __init__(self, client: OllamaClient, parent=None, parser: RPGMakerMVParser = None,
+    def __init__(self, client: AIClient, parent=None, parser: RPGMakerMVParser = None,
                  dark_mode: bool = True, plugin_analyzer=None, engine=None):
         super().__init__(parent)
         self.client = client
@@ -51,14 +53,31 @@ class SettingsDialog(QDialog):
     def _build_ui(self):
         layout = QVBoxLayout(self)
 
-        # ── Connection & Prompt ──────────────────────────────────────
-        conn_group = QGroupBox("Ollama Connection")
+        # ── Translation Provider ─────────────────────────────────────
+        conn_group = QGroupBox("Translation Provider")
         conn_form = QFormLayout(conn_group)
 
+        # Provider dropdown
+        self.provider_combo = QComboBox()
+        for p in PROVIDERS:
+            self.provider_combo.addItem(p)
+        self.provider_combo.currentTextChanged.connect(self._on_provider_changed)
+        conn_form.addRow("Provider:", self.provider_combo)
+
+        # API Key (hidden for Ollama)
+        self.api_key_edit = QLineEdit()
+        self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key_edit.setPlaceholderText("Enter API key...")
+        self._api_key_label = QLabel("API Key:")
+        conn_form.addRow(self._api_key_label, self.api_key_edit)
+
+        # URL (shown for Ollama and Custom)
         self.url_edit = QLineEdit()
         self.url_edit.setPlaceholderText("http://localhost:11434")
-        conn_form.addRow("Ollama URL:", self.url_edit)
+        self._url_label = QLabel("Server URL:")
+        conn_form.addRow(self._url_label, self.url_edit)
 
+        # Model
         model_row = QHBoxLayout()
         self.model_combo = QComboBox()
         self.model_combo.setEditable(True)
@@ -79,7 +98,7 @@ class SettingsDialog(QDialog):
         self.model_hint_label.setWordWrap(True)
         conn_form.addRow("", self.model_hint_label)
 
-        # Vision model (for image translation OCR)
+        # Vision model (for image translation OCR — Ollama only)
         vision_row = QHBoxLayout()
         self.vision_combo = QComboBox()
         self.vision_combo.setEditable(True)
@@ -87,7 +106,8 @@ class SettingsDialog(QDialog):
         self.vision_combo.setToolTip(
             "Vision model for image OCR (e.g. qwen3-vl:8b).\n"
             "Used by Translate Images to detect Japanese text in game images.\n"
-            "Leave empty to disable image translation."
+            "Leave empty to disable image translation.\n"
+            "(Ollama only)"
         )
         vision_row.addWidget(self.vision_combo)
 
@@ -95,7 +115,8 @@ class SettingsDialog(QDialog):
         self.vision_refresh_btn.clicked.connect(self._refresh_vision_models)
         vision_row.addWidget(self.vision_refresh_btn)
 
-        conn_form.addRow("Vision Model:", vision_row)
+        self._vision_label = QLabel("Vision Model:")
+        conn_form.addRow(self._vision_label, vision_row)
 
         self.status_label = QLabel("")
         conn_form.addRow("", self.status_label)
@@ -111,23 +132,53 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(conn_group)
 
-        # Prompt
+        # ── Prompt ───────────────────────────────────────────────────
         prompt_group = QGroupBox("Translation Prompt")
         prompt_layout = QVBoxLayout(prompt_group)
-        prompt_layout.addWidget(QLabel("System prompt sent to the LLM:"))
+
+        # Prompt preset dropdown + buttons
+        preset_row = QHBoxLayout()
+        self.prompt_preset_combo = QComboBox()
+        for name in PROMPT_PRESETS:
+            self.prompt_preset_combo.addItem(name)
+        self.prompt_preset_combo.currentTextChanged.connect(self._on_preset_changed)
+        preset_row.addWidget(QLabel("Preset:"))
+        preset_row.addWidget(self.prompt_preset_combo, 1)
+
+        reset_btn = QPushButton("Reset Default")
+        reset_btn.setToolTip("Reset prompt to the recommended default for the current model")
+        reset_btn.clicked.connect(self._reset_prompt_default)
+        preset_row.addWidget(reset_btn)
+
+        clear_btn = QPushButton("Clear")
+        clear_btn.setToolTip("Clear the prompt (uses built-in default at translation time)")
+        clear_btn.clicked.connect(self._clear_prompt)
+        preset_row.addWidget(clear_btn)
+
+        prompt_layout.addLayout(preset_row)
+
         self.prompt_edit = QPlainTextEdit()
         self.prompt_edit.setMinimumHeight(120)
+        self.prompt_edit.textChanged.connect(self._on_prompt_edited)
         prompt_layout.addWidget(self.prompt_edit)
-
-        reset_btn = QPushButton("Reset to Default")
-        reset_btn.clicked.connect(self._reset_prompt_to_default)
-        prompt_layout.addWidget(reset_btn, alignment=Qt.AlignmentFlag.AlignLeft)
 
         layout.addWidget(prompt_group)
 
         # Translation options
         opts_group = QGroupBox("Translation Options")
         opts_form = QFormLayout(opts_group)
+
+        self.dazed_mode_check = QCheckBox("DazedMTL Mode")
+        self.dazed_mode_check.setToolTip(
+            "Mirrors DazedMTL's translation settings:\n"
+            "  - Batch size: 30 lines per request\n"
+            "  - DazedMTL Full prompt\n"
+            "  - Parallel workers: 4\n\n"
+            "Good for cloud APIs and Sugoi. Turn off for\n"
+            "single-entry mode (better for small local models)."
+        )
+        self.dazed_mode_check.stateChanged.connect(self._on_dazed_mode_changed)
+        opts_form.addRow(self.dazed_mode_check)
 
         self.context_spin = QSpinBox()
         self.context_spin.setRange(0, 20)
@@ -147,12 +198,12 @@ class SettingsDialog(QDialog):
         opts_form.addRow("Parallel workers:", self.workers_spin)
 
         self.batch_spin = QSpinBox()
-        self.batch_spin.setRange(1, 20)
+        self.batch_spin.setRange(1, 50)
         self.batch_spin.setSpecialValueText("Disabled (single-entry)")
         self.batch_spin.setToolTip(
             "Number of entries sent per LLM request as a JSON batch.\n"
             "1 = single-entry mode (recommended for local Ollama).\n"
-            "5-10 = useful for cloud APIs (reduces network round trips).\n\n"
+            "30 = cloud APIs (DazedMTL default — reduces round trips).\n\n"
             "For local LLMs, batching does NOT improve speed\n"
             "(GPU generates the same tokens either way).\n"
             "It's mainly useful for cloud APIs where per-request\n"
@@ -242,15 +293,30 @@ class SettingsDialog(QDialog):
         """Populate fields from current client settings."""
         self._orig_url = self.client.base_url
         self._orig_model = self.client.model
+        self._orig_provider = self.client.provider
         self._orig_workers = self.engine.num_workers if self.engine else 2
         self._orig_language = self.client.target_language
+        self._suppress_preset_change = False  # Flag to avoid feedback loops
+
+        # Provider
+        idx = self.provider_combo.findText(self.client.provider)
+        if idx >= 0:
+            self.provider_combo.setCurrentIndex(idx)
+        self.api_key_edit.setText(self.client.api_key)
         self.url_edit.setText(self.client.base_url)
+
+        # Prompt preset — match current prompt to a known preset
+        self._prompt_preset = getattr(self.client, "_prompt_preset", "Custom")
+        preset_idx = self.prompt_preset_combo.findText(self._prompt_preset)
+        if preset_idx >= 0:
+            self.prompt_preset_combo.setCurrentIndex(preset_idx)
+        self.prompt_edit.setPlainText(self.client.system_prompt)
+
         self.model_combo.setCurrentText(self.client.model)
         for i in range(self.lang_combo.count()):
             if self.lang_combo.itemData(i) == self.client.target_language:
                 self.lang_combo.setCurrentIndex(i)
                 break
-        self.prompt_edit.setPlainText(self.client.system_prompt)
         self.context_spin.setValue(self.parser.context_size if self.parser else 3)
         self.workers_spin.setValue(self.engine.num_workers if self.engine else 2)
         self.batch_spin.setValue(self.engine.batch_size if self.engine else 5)
@@ -262,18 +328,158 @@ class SettingsDialog(QDialog):
         self.single_401_check.setChecked(
             self.parser.single_401_mode if self.parser else False)
         self.dark_mode_check.setChecked(self.dark_mode)
+        self.dazed_mode_check.setChecked(getattr(self.client, "dazed_mode", False))
         self.script_strings_check.setChecked(
             self.parser.extract_script_strings if self.parser else False
         )
         self.vision_combo.setCurrentText(getattr(self.client, "vision_model", "") or "")
-        # Fetch models in background thread so the dialog appears instantly
-        self._model_fetcher = _ModelFetcher(
-            self.client,
-            self.url_edit.text().strip() or "http://localhost:11434",
-        )
-        self._model_fetcher.done.connect(self._on_models_fetched)
-        self.status_label.setText("Fetching models...")
-        self._model_fetcher.start()
+
+        # Apply provider visibility and fetch models
+        self._on_provider_changed(self.client.provider)
+
+    # ── Provider / Prompt preset handlers ─────────────────────────────
+
+    def _on_provider_changed(self, provider: str):
+        """Show/hide fields based on the selected provider."""
+        is_ollama = provider == "Ollama (Local)"
+        is_custom = provider == "Custom"
+        is_cloud = not is_ollama
+
+        # API key: visible for cloud providers
+        self._api_key_label.setVisible(is_cloud)
+        self.api_key_edit.setVisible(is_cloud)
+
+        # URL: visible for Ollama and Custom
+        self._url_label.setVisible(is_ollama or is_custom)
+        self.url_edit.setVisible(is_ollama or is_custom)
+
+        # Vision model: Ollama only
+        self._vision_label.setVisible(is_ollama)
+        self.vision_combo.setVisible(is_ollama)
+        self.vision_refresh_btn.setVisible(is_ollama)
+
+        # Refresh button: only for Ollama (cloud uses preset models)
+        self.refresh_btn.setVisible(is_ollama or is_custom)
+
+        # Populate model combo with provider presets (cloud) or fetch (Ollama)
+        if is_cloud and not is_custom:
+            models = PROVIDER_MODELS.get(provider, [])
+            current = self.model_combo.currentText()
+            self.model_combo.blockSignals(True)
+            self.model_combo.clear()
+            for m in models:
+                self.model_combo.addItem(m)
+            # Keep current if it's in the new list, else pick first
+            if current in models:
+                self.model_combo.setCurrentText(current)
+            self.model_combo.blockSignals(False)
+            self.status_label.setText(f"{provider}: {len(models)} model(s) available")
+            self.status_label.setStyleSheet("color: #89b4fa;")
+        elif is_ollama:
+            # Fetch models from Ollama in background
+            self._model_fetcher = _ModelFetcher(
+                self.client,
+                self.url_edit.text().strip() or "http://localhost:11434",
+            )
+            self._model_fetcher.done.connect(self._on_models_fetched)
+            self.status_label.setText("Fetching models...")
+            self.status_label.setStyleSheet("")
+            self._model_fetcher.start()
+
+        # Auto-set batch size and workers based on provider/model (DazedMTL defaults)
+        if is_cloud:
+            model = self.model_combo.currentText()
+            config = get_model_pricing(model)
+            self.batch_spin.setValue(config.get("batch_size", 10))
+            self.workers_spin.setValue(CLOUD_DEFAULT_WORKERS)
+        elif is_ollama:
+            self.batch_spin.setValue(1)
+            self.workers_spin.setValue(LOCAL_DEFAULT_WORKERS)
+
+    def _on_preset_changed(self, preset_name: str):
+        """Load the selected prompt preset into the editor."""
+        if self._suppress_preset_change:
+            return
+        self._prompt_preset = preset_name
+        if preset_name != "Custom":
+            prompt_text = PROMPT_PRESETS.get(preset_name, "")
+            if prompt_text:
+                self._suppress_preset_change = True
+                self.prompt_edit.setPlainText(prompt_text)
+                self._suppress_preset_change = False
+
+    def _on_prompt_edited(self):
+        """Switch preset to Custom when user manually edits the prompt."""
+        if self._suppress_preset_change:
+            return
+        current_preset = self.prompt_preset_combo.currentText()
+        if current_preset == "Custom":
+            return
+        # Check if the text still matches the preset
+        preset_text = PROMPT_PRESETS.get(current_preset, "")
+        if preset_text and self.prompt_edit.toPlainText().strip() != preset_text.strip():
+            self._suppress_preset_change = True
+            idx = self.prompt_preset_combo.findText("Custom")
+            if idx >= 0:
+                self.prompt_preset_combo.setCurrentIndex(idx)
+            self._prompt_preset = "Custom"
+            self._suppress_preset_change = False
+
+    def _reset_prompt_default(self):
+        """Reset prompt to the recommended default for the current model/language."""
+        model = self.model_combo.currentText()
+        lang = self.lang_combo.currentData() or "English"
+        default_prompt = build_system_prompt(lang, model=model)
+        self._suppress_preset_change = True
+        self.prompt_edit.setPlainText(default_prompt)
+        # Match the prompt to the correct preset name
+        for name, text in PROMPT_PRESETS.items():
+            if text and text.strip() == default_prompt.strip():
+                idx = self.prompt_preset_combo.findText(name)
+                if idx >= 0:
+                    self.prompt_preset_combo.setCurrentIndex(idx)
+                self._prompt_preset = name
+                break
+        self._suppress_preset_change = False
+
+    def _clear_prompt(self):
+        """Clear the prompt text box and switch preset to Custom."""
+        self._suppress_preset_change = True
+        self.prompt_edit.clear()
+        idx = self.prompt_preset_combo.findText("Custom")
+        if idx >= 0:
+            self.prompt_preset_combo.setCurrentIndex(idx)
+        self._prompt_preset = "Custom"
+        self._suppress_preset_change = False
+
+    def _on_dazed_mode_changed(self, state: int):
+        """Toggle DazedMTL mode — batch 30, DazedMTL Full prompt, 4 workers."""
+        enabled = state == Qt.CheckState.Checked.value
+        if enabled:
+            self.batch_spin.setValue(30)
+            self.workers_spin.setValue(4)
+            # Switch prompt to DazedMTL Full
+            self._suppress_preset_change = True
+            preset_name = "Sugoi (DazedMTL Full)"
+            idx = self.prompt_preset_combo.findText(preset_name)
+            if idx >= 0:
+                self.prompt_preset_combo.setCurrentIndex(idx)
+            self._prompt_preset = preset_name
+            self.prompt_edit.setPlainText(DAZEDMTL_FULL_PROMPT)
+            self._suppress_preset_change = False
+        else:
+            # Restore defaults based on current provider
+            provider = self.provider_combo.currentText()
+            if provider == "Ollama (Local)":
+                self.batch_spin.setValue(1)
+                self.workers_spin.setValue(LOCAL_DEFAULT_WORKERS)
+            else:
+                model = self.model_combo.currentText()
+                config = get_model_pricing(model)
+                self.batch_spin.setValue(config.get("batch_size", 10))
+                self.workers_spin.setValue(CLOUD_DEFAULT_WORKERS)
+            # Reset prompt to model default
+            self._reset_prompt_default()
 
     # ── Model refresh ────────────────────────────────────────────────
 
@@ -348,13 +554,35 @@ class SettingsDialog(QDialog):
         self._model_fetcher.start()
 
     def _test_connection(self):
-        """Test if Ollama is reachable."""
+        """Test if the translation backend is reachable."""
+        provider = self.provider_combo.currentText()
+        # Temporarily apply settings for the test
+        old_provider = self.client.provider
+        old_key = self.client.api_key
+        old_url = self.client.base_url
+        self.client.provider = provider
+        self.client.api_key = self.api_key_edit.text().strip()
         self.client.base_url = self.url_edit.text().strip() or "http://localhost:11434"
+
         if self.client.is_available():
-            QMessageBox.information(self, "Connection OK", "Successfully connected to Ollama!")
+            QMessageBox.information(
+                self, "Connection OK",
+                f"Successfully connected to {provider}!"
+            )
         else:
-            QMessageBox.warning(self, "Connection Failed",
-                                "Cannot reach Ollama. Make sure it's running:\n  ollama serve")
+            if provider == "Ollama (Local)":
+                msg = "Cannot reach Ollama. Make sure it's running:\n  ollama serve"
+            else:
+                msg = (
+                    f"Cannot reach {provider}.\n\n"
+                    "Check that your API key is correct and the service is available."
+                )
+            QMessageBox.warning(self, "Connection Failed", msg)
+
+        # Restore original settings (will be applied for real on Save)
+        self.client.provider = old_provider
+        self.client.api_key = old_key
+        self.client.base_url = old_url
 
     # ── Language / model auto-update ─────────────────────────────────
 
@@ -372,14 +600,14 @@ class SettingsDialog(QDialog):
             self._orig_language = new_lang
 
     def _on_model_changed(self, model_name: str):
-        """Auto-update system prompt and hint label when model changes."""
+        """Auto-update system prompt, hint label, and batch size when model changes."""
         current_lang = self.lang_combo.currentData() or "English"
         current_prompt = self.prompt_edit.toPlainText().strip()
 
         if is_sugoi_model(model_name):
             if current_lang in ("English", "Pig Latin"):
                 self.model_hint_label.setText(
-                    "Sugoi detected \u2014 optimized JP\u2192EN prompt will be used"
+                    "Sugoi detected \u2014 DazedMTL Full prompt recommended (click Reset Default)"
                 )
                 self.model_hint_label.setStyleSheet("color: #a6e3a1;")
             else:
@@ -394,34 +622,40 @@ class SettingsDialog(QDialog):
             new_prompt = build_system_prompt(current_lang, model=model_name)
             self.prompt_edit.setPlainText(new_prompt)
 
-    def _is_known_prompt_template(self, prompt: str) -> bool:
-        """Check if the prompt matches any auto-generated template."""
-        p = prompt.strip()
-        return (
-            p == SYSTEM_PROMPT.strip()
-            or p == SUGOI_SYSTEM_PROMPT.strip()
-            or p == build_system_prompt(self.lang_combo.currentData() or "English").strip()
-        )
+        # Auto-set batch size from model config (cloud providers only)
+        provider = self.provider_combo.currentText()
+        if provider != "Ollama (Local)":
+            config = get_model_pricing(model_name)
+            batch = config.get("batch_size", 10)
+            if batch != self.batch_spin.value():
+                self.batch_spin.setValue(batch)
 
-    def _reset_prompt_to_default(self):
-        """Reset prompt to the correct default for the current model."""
-        current_model = self.model_combo.currentText()
-        current_lang = self.lang_combo.currentData() or "English"
-        self.prompt_edit.setPlainText(build_system_prompt(current_lang, model=current_model))
+    def _is_known_prompt_template(self, prompt: str) -> bool:
+        """Check if the prompt matches any known preset or auto-generated template."""
+        p = prompt.strip()
+        # Check all presets
+        for name, text in PROMPT_PRESETS.items():
+            if text and p == text.strip():
+                return True
+        return p == build_system_prompt(self.lang_combo.currentData() or "English").strip()
 
     # ── Save / Cancel ────────────────────────────────────────────────
 
     def reject(self):
-        """Revert any URL/model changes made during the dialog."""
+        """Revert any URL/model/provider changes made during the dialog."""
         self.client.base_url = self._orig_url
         self.client.model = self._orig_model
+        self.client.provider = self._orig_provider
         super().reject()
 
     def _save(self):
         """Apply settings and close."""
+        self.client.provider = self.provider_combo.currentText()
+        self.client.api_key = self.api_key_edit.text().strip()
         self.client.base_url = self.url_edit.text().strip() or "http://localhost:11434"
         self.client.model = self.model_combo.currentText().strip()
         self.client.system_prompt = self.prompt_edit.toPlainText().strip() or SYSTEM_PROMPT
+        self.client._prompt_preset = self.prompt_preset_combo.currentText()
         self.client.target_language = self.lang_combo.currentData() or "English"
         self.client.vision_model = self.vision_combo.currentText().strip()
         if self.parser:
@@ -433,7 +667,7 @@ class SettingsDialog(QDialog):
             self.engine.batch_size = self.batch_spin.value()
             self.engine.max_history = self.history_spin.value()
 
-        if new_workers != self._orig_workers:
+        if new_workers != self._orig_workers and not self.client.is_cloud:
             self._restart_ollama(new_workers)
 
         if self.plugin_analyzer:
@@ -442,6 +676,7 @@ class SettingsDialog(QDialog):
             if manual > 0:
                 self.plugin_analyzer.chars_per_line = manual
         self.dark_mode = self.dark_mode_check.isChecked()
+        self.client.dazed_mode = self.dazed_mode_check.isChecked()
         if self.parser:
             self.parser.extract_script_strings = self.script_strings_check.isChecked()
             self.parser.single_401_mode = self.single_401_check.isChecked()
