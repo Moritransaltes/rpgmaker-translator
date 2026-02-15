@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableView,
     QLineEdit, QComboBox, QLabel, QMenu, QAbstractItemView, QHeaderView,
     QInputDialog, QMessageBox, QTextEdit, QSplitter, QGroupBox, QCheckBox,
-    QPushButton,
+    QPushButton, QTreeWidget, QTreeWidgetItem,
 )
 from PyQt6.QtCore import (
     pyqtSignal, Qt, QTimer, QAbstractTableModel, QModelIndex,
@@ -338,7 +338,10 @@ class TranslationTable(QWidget):
 
         vsplit.addWidget(self.table)
 
-        # ── Editor panel ───────────────────────────────────────────
+        # ── Editor + Context panel ─────────────────────────────────
+        editor_split = QSplitter(Qt.Orientation.Vertical)
+
+        # Top: side-by-side editors
         editor_widget = QWidget()
         editor_layout = QHBoxLayout(editor_widget)
         editor_layout.setContentsMargins(0, 0, 0, 0)
@@ -367,9 +370,35 @@ class TranslationTable(QWidget):
         trans_box.addWidget(self.trans_editor)
         editor_layout.addWidget(trans_group)
 
-        vsplit.addWidget(editor_widget)
+        editor_split.addWidget(editor_widget)
 
-        # Default split: 70% table, 30% editor
+        # Bottom: event context pane — mini side-by-side JP|EN table
+        context_group = QGroupBox("Event Context")
+        context_box = QVBoxLayout(context_group)
+        context_box.setContentsMargins(4, 4, 4, 4)
+        self.context_tree = QTreeWidget()
+        self.context_tree.setHeaderLabels(["Speaker", "Original (JP)", "Translation (EN)"])
+        self.context_tree.setColumnCount(3)
+        self.context_tree.setRootIsDecorated(False)
+        self.context_tree.setAlternatingRowColors(True)
+        self.context_tree.setWordWrap(True)
+        self.context_tree.itemClicked.connect(self._on_context_item_clicked)
+        self.context_tree.itemChanged.connect(self._on_context_item_edited)
+        # Column sizing: speaker narrow, JP and EN share remaining space equally
+        ctx_header = self.context_tree.header()
+        ctx_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        ctx_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        ctx_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        context_box.addWidget(self.context_tree)
+        editor_split.addWidget(context_group)
+
+        # Editor split: 60% editors, 40% context
+        editor_split.setStretchFactor(0, 6)
+        editor_split.setStretchFactor(1, 4)
+
+        vsplit.addWidget(editor_split)
+
+        # Default split: 70% table, 30% editor+context
         vsplit.setStretchFactor(0, 7)
         vsplit.setStretchFactor(1, 3)
 
@@ -903,6 +932,7 @@ class TranslationTable(QWidget):
             self._selected_row = -1
             self.orig_editor.clear()
             self.trans_editor.clear()
+            self.context_tree.clear()
             return
 
         self._selected_row = row
@@ -913,6 +943,128 @@ class TranslationTable(QWidget):
         self.orig_editor.setPlainText(entry.original)
         self.trans_editor.setPlainText(entry.translation)
         self.trans_editor.blockSignals(False)
+
+        self._update_context_pane(entry)
+
+    @staticmethod
+    def _event_prefix(entry_id: str) -> str:
+        """Extract event prefix from entry ID (everything before the last segment).
+
+        "CommonEvents.json/CE169(Name)/dialog_5" → "CommonEvents.json/CE169(Name)"
+        "Map001.json/Ev3(EV003)/p0/dialog_5" → "Map001.json/Ev3(EV003)/p0"
+        """
+        idx = entry_id.rfind("/")
+        return entry_id[:idx] if idx > 0 else ""
+
+    def _update_context_pane(self, selected_entry):
+        """Show surrounding entries from the same event in the context tree."""
+        self.context_tree.clear()
+
+        prefix = self._event_prefix(selected_entry.id)
+        if not prefix:
+            return
+
+        # Find all entries from the same event (search ALL entries, not just visible)
+        event_entries = [e for e in self._all_entries
+                         if e.id.startswith(prefix + "/")]
+        if not event_entries:
+            return
+
+        # Find selected entry's position in the event
+        sel_idx = -1
+        for i, e in enumerate(event_entries):
+            if e.id == selected_entry.id:
+                sel_idx = i
+                break
+
+        # Show ~10 before + selected + ~10 after (or full event if small)
+        radius = 10
+        if len(event_entries) <= radius * 2 + 1:
+            start, end = 0, len(event_entries)
+        else:
+            start = max(0, sel_idx - radius)
+            end = min(len(event_entries), sel_idx + radius + 1)
+
+        # Update group box title with event name
+        ctx_display = _extract_event_context(selected_entry.id)
+        parent_group = self.context_tree.parent()
+        if isinstance(parent_group, QGroupBox):
+            count_info = f"{len(event_entries)} entries"
+            parent_group.setTitle(
+                f"Event Context — {ctx_display} ({count_info})"
+                if ctx_display else "Event Context")
+
+        highlight_item = None
+        for i in range(start, end):
+            e = event_entries[i]
+            # Extract speaker from context
+            speaker = ""
+            if e.context:
+                for line in e.context.split("\n"):
+                    if line.startswith("[Speaker:"):
+                        speaker = line.strip("[]").replace("Speaker: ", "")
+                        break
+
+            orig = e.original.replace("\n", " ")
+            trans = e.translation.replace("\n", " ") if e.translation else ""
+
+            item = QTreeWidgetItem([speaker, orig, trans])
+            item.setData(0, Qt.ItemDataRole.UserRole, e.id)
+            # Make EN column editable
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+
+            # Highlight the selected entry
+            if i == sel_idx:
+                font = item.font(0)
+                font.setBold(True)
+                for col in range(3):
+                    item.setFont(col, font)
+                    item.setBackground(col, QColor("#45475a"))
+                    item.setForeground(col, QColor("#cdd6f4"))
+                highlight_item = item
+            elif e.status == "untranslated":
+                red = QColor("#f38ba8")
+                for col in range(3):
+                    item.setForeground(col, red)
+
+            self.context_tree.addTopLevelItem(item)
+
+        # Scroll to keep selected entry visible
+        if highlight_item:
+            self.context_tree.scrollToItem(highlight_item)
+
+    def _on_context_item_clicked(self, item: QTreeWidgetItem, column: int):
+        """Navigate the main table to the clicked context entry."""
+        entry_id = item.data(0, Qt.ItemDataRole.UserRole)
+        if entry_id:
+            self._select_entry_by_id(entry_id)
+
+    def _on_context_item_edited(self, item: QTreeWidgetItem, column: int):
+        """Sync edits from the context pane EN column back to the entry."""
+        if column != 2:  # Only EN column
+            return
+        entry_id = item.data(0, Qt.ItemDataRole.UserRole)
+        if not entry_id:
+            return
+        new_text = item.text(2)
+        # Find the entry and update it
+        for entry in self._all_entries:
+            if entry.id == entry_id:
+                entry.translation = new_text
+                entry.status = "translated" if new_text.strip() else "untranslated"
+                # If this entry is currently shown in the main editor, sync it
+                if (self._selected_row >= 0
+                        and self._selected_row < len(self._visible_entries)
+                        and self._visible_entries[self._selected_row].id == entry_id):
+                    self.trans_editor.blockSignals(True)
+                    self.trans_editor.setPlainText(new_text)
+                    self.trans_editor.blockSignals(False)
+                # Refresh main table row if visible
+                for row, ve in enumerate(self._visible_entries):
+                    if ve.id == entry_id:
+                        self._model.refresh_row(row)
+                        break
+                break
 
     def _on_editor_changed(self):
         """Save edits from the translation editor back to the entry and table."""
