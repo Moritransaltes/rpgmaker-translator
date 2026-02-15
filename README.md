@@ -13,6 +13,7 @@ Cloud API engine ported from <a href="https://github.com/dazedanon/DazedMTLTool"
 </p>
 
 <p align="center">
+  <i>Built solo with local LLMs and Claude Code. If this saved you hours of work, consider supporting development:</i><br><br>
   <a href="https://ko-fi.com/moritranslates"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support on Ko-fi"></a>
 </p>
 
@@ -234,7 +235,7 @@ Project entries override general entries for the same JP term.
 | Problem | Fix |
 |---|---|
 | "Cannot connect to Ollama" | Run `ollama serve` in a terminal first |
-| Translations are slow | Each entry takes 2-10s. Use a smaller model or switch to cloud API |
+| Translations are slow | Enable DazedMTL Mode or set batch size 20-30. Auto-tune finds your GPU's sweet spot. Single-entry mode is 2-10s; batch mode hits ~1s/entry on a 4070 Ti |
 | Wrong pronouns | Assign correct genders in the actor dialog, or use Batch by Actor mode |
 | Missing control codes | Right-click > Restore Missing Codes, or they auto-restore at checkpoints |
 | Cloud API errors | Check your API key in Settings. Test Connection button verifies connectivity |
