@@ -178,6 +178,8 @@ from .glossary_dialog import GlossaryDialog
 from .actor_gender_dialog import ActorGenderDialog
 from .variant_dialog import VariantDialog
 from .image_panel import ImagePanel
+from .gpu_monitor import GPUMonitorPanel
+from .queue_panel import QueuePanel
 
 
 class MainWindow(QMainWindow):
@@ -253,6 +255,10 @@ class MainWindow(QMainWindow):
         if not self.client.is_available():
             self.client.restart_server(self.engine.num_workers)
 
+        # Clear stale models from VRAM on startup (keep_alive=-1 persists across sessions)
+        if not self.client.is_cloud:
+            self.client.unload_models()
+
         # Auto-save timer (every 2 minutes)
         self._autosave_timer = QTimer(self)
         self._autosave_timer.timeout.connect(self._autosave)
@@ -266,8 +272,18 @@ class MainWindow(QMainWindow):
 
         # Tab 1: Text Translation (existing layout)
         text_tab = QSplitter(Qt.Orientation.Horizontal)
+
+        # Left column: file tree + GPU monitor
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
         self.file_tree = FileTreeWidget()
-        text_tab.addWidget(self.file_tree)
+        left_layout.addWidget(self.file_tree, 1)
+        self.gpu_monitor = GPUMonitorPanel()
+        left_layout.addWidget(self.gpu_monitor)
+
+        text_tab.addWidget(left_panel)
         self.trans_table = TranslationTable()
         text_tab.addWidget(self.trans_table)
         text_tab.setSizes([250, 950])
@@ -276,6 +292,10 @@ class MainWindow(QMainWindow):
         # Tab 2: Image Translation
         self.image_panel = ImagePanel()
         self.tabs.addTab(self.image_panel, "Image Translation (Experimental)")
+
+        # Tab 3: Translation Queue
+        self.queue_panel = QueuePanel()
+        self.tabs.addTab(self.queue_panel, "Translation Queue")
 
         self.setCentralWidget(self.tabs)
 
@@ -681,6 +701,9 @@ class MainWindow(QMainWindow):
                     )
                     folder = os.path.basename(path)
                     self.setWindowTitle(f"RPG Maker Translator \u2014 {folder}")
+                    # Preload model into VRAM
+                    if not self.client.is_cloud:
+                        self._preload_model()
                     return
                 # Fall through to fresh project on load failure
 
@@ -754,6 +777,10 @@ class MainWindow(QMainWindow):
         folder = os.path.basename(path)
         self.setWindowTitle(f"RPG Maker Translator \u2014 {folder}")
 
+        # Preload model into VRAM so it's ready for translation
+        if not self.client.is_cloud:
+            self._preload_model()
+
     @staticmethod
     def _pick_newest_save(*paths: str) -> str | None:
         """Return the most recently modified path that exists, or None."""
@@ -824,107 +851,139 @@ class MainWindow(QMainWindow):
     def _pre_translate_info(self, entries, actors_raw):
         """Translate game title + actor names/profiles before the gender dialog.
 
-        Translations are saved directly to the TranslationEntry objects so
-        they persist across save/load cycles.
+        Uses batch mode when batch_size > 1 (DazedMTL mode / cloud APIs)
+        to translate all names in 1-2 API calls instead of one per field.
 
         Returns:
             (actor_translations, translated_title) where actor_translations is
             {actor_id: {"name": ..., "nickname": ..., "profile": ...}}
         """
-        # Build list of items to translate
-        items = []  # (label, text) for progress display
+        # Check availability first
+        if not self.client.is_available():
+            return {}, ""
+
+        entry_by_id = {e.id: e for e in entries}
+        batch_size = self.engine.batch_size if self.engine else 1
+
+        # Find game title entry
         title_entry = None
         for e in entries:
             if e.id == "System.json/gameTitle":
                 title_entry = e
-                items.append(("Game title", e.original))
                 break
 
+        # Collect all items that need translation (skip already-translated)
+        translated_title = ""
+        actor_translations = {}
+        to_translate = []  # (key, text, hint) for batch
+
+        if title_entry:
+            if title_entry.status in ("translated", "reviewed"):
+                translated_title = title_entry.translation
+            else:
+                to_translate.append(("gameTitle", title_entry.original, "game title"))
+
+        field_hints = {
+            "name": "character's personal name",
+            "nickname": "character's nickname or title",
+            "profile": "character's biography",
+        }
         for actor in actors_raw:
-            if actor.get("name"):
-                items.append((f"Actor {actor['id']} name", actor["name"]))
-            if actor.get("nickname"):
-                items.append((f"Actor {actor['id']} nickname", actor["nickname"]))
-            if actor.get("profile"):
-                items.append((f"Actor {actor['id']} profile", actor["profile"]))
+            aid = actor["id"]
+            if aid not in actor_translations:
+                actor_translations[aid] = {}
+            for field in ("name", "nickname", "profile"):
+                text = actor.get(field, "")
+                if not text:
+                    continue
+                entry_id = f"Actors/{aid}/{field}"
+                entry = entry_by_id.get(entry_id)
+                if entry and entry.status in ("translated", "reviewed") and entry.translation:
+                    actor_translations[aid][field] = entry.translation
+                    continue
+                to_translate.append((f"actor_{aid}_{field}", text, field_hints[field]))
 
-        if not items:
-            return {}, ""
-
-        # Check Ollama availability first
-        if not self.client.is_available():
-            return {}, ""
-
-        # Build entry lookup for saving translations back
-        entry_by_id = {e.id: e for e in entries}
+        if not to_translate:
+            return actor_translations, translated_title
 
         progress = QProgressDialog(
-            "Translating character info...", "Skip", 0, len(items), self
+            "Translating character info...", "Skip", 0, len(to_translate), self
         )
         progress.setWindowTitle("Pre-translating")
         progress.setMinimumDuration(0)
         progress.setValue(0)
 
-        translated_title = ""
-        actor_translations = {}  # {actor_id: {"name":..., "nickname":..., "profile":...}}
-        idx = 0
-
-        # Translate game title
-        if title_entry:
-            progress.setLabelText(f"Translating game title...")
+        # ── Batch mode: send all names in chunks ──
+        if batch_size > 1:
+            progress.setLabelText(
+                f"Batch translating {len(to_translate)} names..."
+            )
             QApplication.processEvents()
-            if progress.wasCanceled():
-                return actor_translations, translated_title
-            if title_entry.status in ("translated", "reviewed"):
-                # Already translated (from a saved state) — reuse it
-                translated_title = title_entry.translation
-            else:
-                result = self.client.translate_name(title_entry.original, hint="game title")
-                if result and result != title_entry.original:
-                    translated_title = result
-                    title_entry.translation = result
-                    title_entry.status = "translated"
-            idx += 1
-            progress.setValue(idx)
 
-        # Translate actor fields
-        for actor in actors_raw:
-            aid = actor["id"]
-            if aid not in actor_translations:
-                actor_translations[aid] = {}
+            results = {}
+            for i in range(0, len(to_translate), batch_size):
+                if progress.wasCanceled():
+                    break
+                chunk = to_translate[i:i + batch_size]
+                progress.setLabelText(
+                    f"Translating names {i + 1}-{min(i + len(chunk), len(to_translate))} "
+                    f"of {len(to_translate)}..."
+                )
+                QApplication.processEvents()
+                batch_results = self.client.translate_names_batch(chunk)
+                results.update(batch_results)
+                progress.setValue(min(i + len(chunk), len(to_translate)))
+                QApplication.processEvents()
 
-            for field in ("name", "nickname", "profile"):
-                text = actor.get(field, "")
-                if not text:
+            # Apply batch results
+            for key, text, _hint in to_translate:
+                translated = results.get(key, "")
+                if not translated:
                     continue
-                progress.setLabelText(f"Translating Actor {aid} {field}...")
+                if key == "gameTitle":
+                    translated_title = translated
+                    if title_entry and title_entry.status == "untranslated":
+                        title_entry.translation = translated
+                        title_entry.status = "translated"
+                elif key.startswith("actor_"):
+                    _, aid_str, field = key.split("_", 2)
+                    aid = int(aid_str)
+                    if aid not in actor_translations:
+                        actor_translations[aid] = {}
+                    actor_translations[aid][field] = translated
+                    entry_id = f"Actors/{aid}/{field}"
+                    entry = entry_by_id.get(entry_id)
+                    if entry and entry.status == "untranslated":
+                        entry.translation = translated
+                        entry.status = "translated"
+
+        # ── Single mode: one API call per name ──
+        else:
+            for idx, (key, text, hint) in enumerate(to_translate):
+                progress.setLabelText(f"Translating {hint}...")
                 QApplication.processEvents()
                 if progress.wasCanceled():
-                    return actor_translations, translated_title
+                    break
 
-                # Check if this entry was already translated (saved state)
-                entry_id = f"Actors/{aid}/{field}"
-                entry = entry_by_id.get(entry_id)
-                if entry and entry.status in ("translated", "reviewed") and entry.translation:
-                    actor_translations[aid][field] = entry.translation
-                    idx += 1
-                    progress.setValue(idx)
-                    continue
-
-                field_hints = {
-                    "name": "character's personal name",
-                    "nickname": "character's nickname or title",
-                    "profile": "character's biography",
-                }
-                result = self.client.translate_name(text, hint=field_hints[field])
+                result = self.client.translate_name(text, hint=hint)
                 if result and result != text:
-                    actor_translations[aid][field] = result
-                    # Save translation to the entry so it persists
-                    if entry and entry.status == "untranslated":
-                        entry.translation = result
-                        entry.status = "translated"
-                idx += 1
-                progress.setValue(idx)
+                    if key == "gameTitle":
+                        translated_title = result
+                        if title_entry and title_entry.status == "untranslated":
+                            title_entry.translation = result
+                            title_entry.status = "translated"
+                    elif key.startswith("actor_"):
+                        _, aid_str, field = key.split("_", 2)
+                        aid = int(aid_str)
+                        if aid not in actor_translations:
+                            actor_translations[aid] = {}
+                        actor_translations[aid][field] = result
+                        entry_id = f"Actors/{aid}/{field}"
+                        entry = entry_by_id.get(entry_id)
+                        if entry and entry.status == "untranslated":
+                            entry.translation = result
+                            entry.status = "translated"
+                progress.setValue(idx + 1)
 
         progress.close()
         return actor_translations, translated_title
@@ -1341,6 +1400,34 @@ class MainWindow(QMainWindow):
         self.txt_export_action.setEnabled(True)
         self.create_patch_action.setEnabled(True)
         self.export_zip_action.setEnabled(True)
+
+    def _preload_model(self):
+        """Unload stale models and load the active one into VRAM.
+
+        Clears any previously loaded models first to free VRAM,
+        then sends a blank request with keep_alive=-1 so the model
+        stays resident and ready for instant inference.
+        """
+        # Clear other models from VRAM first
+        unloaded = self.client.unload_models()
+        if unloaded:
+            self.statusbar.showMessage(
+                f"Cleared {unloaded} model(s) from VRAM, loading {self.client.model}...", 3000
+            )
+        else:
+            self.statusbar.showMessage(
+                f"Loading {self.client.model} into VRAM...", 3000
+            )
+        QApplication.processEvents()
+        ok = self.client.preload_model()
+        if ok:
+            self.statusbar.showMessage(
+                f"{self.client.model} loaded — ready to translate", 5000
+            )
+        else:
+            self.statusbar.showMessage(
+                f"Could not preload {self.client.model} — will load on first translate", 5000
+            )
 
     def _import_translations(self):
         """Import translations from an older version's save state."""
@@ -2228,6 +2315,9 @@ class MainWindow(QMainWindow):
                 self._apply_dark_mode()
                 self.trans_table.set_dark_mode(self._dark_mode)
             self._save_settings()
+            # Preload model into VRAM if model changed (avoids cold-start delay)
+            if not self.client.is_cloud:
+                self._preload_model()
 
     def _open_glossary(self):
         """Open the standalone glossary editor."""
@@ -2263,6 +2353,7 @@ class MainWindow(QMainWindow):
     def _on_error(self, entry_id: str, error_msg: str):
         """Handle translation error for a single entry."""
         self.statusbar.showMessage(f"Error translating {entry_id}: {error_msg}", 5000)
+        self.queue_panel.mark_entry_error(entry_id, error_msg)
 
     def _on_batch_finished(self):
         """Handle batch translation/polish completing."""
@@ -2304,6 +2395,7 @@ class MainWindow(QMainWindow):
                 return
             # else: no dialogue left, fall through to normal finish
 
+        self.queue_panel.mark_batch_finished()
         self.batch_db_action.setEnabled(True)
         self.batch_dialogue_action.setEnabled(True)
         self.batch_action.setEnabled(True)
@@ -2918,6 +3010,10 @@ class MainWindow(QMainWindow):
         if self.client.is_cloud:
             self.client.reset_session_cost()
 
+        # Populate the queue panel and switch to it
+        self.queue_panel.load_queue(untranslated)
+        self.tabs.setCurrentWidget(self.queue_panel)
+
         self.engine.translate_batch(untranslated)
 
     # ── Polish Grammar ──────────────────────────────────────────────
@@ -2964,6 +3060,10 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self._batch_start_time = time.time()
         self._batch_done_count = 0
+
+        # Populate queue panel for polish
+        self.queue_panel.load_queue(to_polish)
+        self.tabs.setCurrentWidget(self.queue_panel)
 
         self.engine.polish_batch(to_polish)
 
@@ -3953,6 +4053,8 @@ class MainWindow(QMainWindow):
             self._maybe_add_to_glossary(entry)
         self.trans_table.update_entry(entry_id, translation)
         self.file_tree.refresh_stats(self.project)
+        # Update queue panel
+        self.queue_panel.mark_entry_done(entry_id, translation, source="LLM")
 
     # ── Retranslate single entry with correction ──────────────────
 

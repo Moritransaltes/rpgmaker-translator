@@ -173,9 +173,11 @@ class SettingsDialog(QDialog):
             "Mirrors DazedMTL's translation settings:\n"
             "  - Batch size: 30 lines per request\n"
             "  - DazedMTL Full prompt\n"
-            "  - Parallel workers: 4\n\n"
-            "Good for cloud APIs and Sugoi. Turn off for\n"
-            "single-entry mode (better for small local models)."
+            "  - Cloud: 4 parallel workers\n"
+            "  - Local Ollama: 1 worker (GPU can't parallelize)\n\n"
+            "Best for cloud APIs. For local Sugoi, batching\n"
+            "still helps (fewer round trips) but workers=1\n"
+            "is optimal since the GPU processes sequentially."
         )
         self.dazed_mode_check.stateChanged.connect(self._on_dazed_mode_changed)
         opts_form.addRow(self.dazed_mode_check)
@@ -297,6 +299,7 @@ class SettingsDialog(QDialog):
         self._orig_workers = self.engine.num_workers if self.engine else 2
         self._orig_language = self.client.target_language
         self._suppress_preset_change = False  # Flag to avoid feedback loops
+        self._loading = True  # Suppress auto-set of batch/workers during load
 
         # Provider
         idx = self.provider_combo.findText(self.client.provider)
@@ -336,6 +339,7 @@ class SettingsDialog(QDialog):
 
         # Apply provider visibility and fetch models
         self._on_provider_changed(self.client.provider)
+        self._loading = False
 
     # ── Provider / Prompt preset handlers ─────────────────────────────
 
@@ -387,14 +391,16 @@ class SettingsDialog(QDialog):
             self._model_fetcher.start()
 
         # Auto-set batch size and workers based on provider/model (DazedMTL defaults)
-        if is_cloud:
-            model = self.model_combo.currentText()
-            config = get_model_pricing(model)
-            self.batch_spin.setValue(config.get("batch_size", 10))
-            self.workers_spin.setValue(CLOUD_DEFAULT_WORKERS)
-        elif is_ollama:
-            self.batch_spin.setValue(1)
-            self.workers_spin.setValue(LOCAL_DEFAULT_WORKERS)
+        # Skip during initial load — saved values should be preserved
+        if not self._loading:
+            if is_cloud:
+                model = self.model_combo.currentText()
+                config = get_model_pricing(model)
+                self.batch_spin.setValue(config.get("batch_size", 10))
+                self.workers_spin.setValue(CLOUD_DEFAULT_WORKERS)
+            elif is_ollama:
+                self.batch_spin.setValue(1)
+                self.workers_spin.setValue(LOCAL_DEFAULT_WORKERS)
 
     def _on_preset_changed(self, preset_name: str):
         """Load the selected prompt preset into the editor."""
@@ -454,10 +460,16 @@ class SettingsDialog(QDialog):
 
     def _on_dazed_mode_changed(self, state: int):
         """Toggle DazedMTL mode — batch 30, DazedMTL Full prompt, 4 workers."""
+        if self._loading:
+            return  # Don't override saved values during initial load
         enabled = state == Qt.CheckState.Checked.value
         if enabled:
             self.batch_spin.setValue(30)
-            self.workers_spin.setValue(4)
+            provider = self.provider_combo.currentText()
+            if provider == "Ollama (Local)":
+                self.workers_spin.setValue(LOCAL_DEFAULT_WORKERS)
+            else:
+                self.workers_spin.setValue(CLOUD_DEFAULT_WORKERS)
             # Switch prompt to DazedMTL Full
             self._suppress_preset_change = True
             preset_name = "Sugoi (DazedMTL Full)"
@@ -623,12 +635,14 @@ class SettingsDialog(QDialog):
             self.prompt_edit.setPlainText(new_prompt)
 
         # Auto-set batch size from model config (cloud providers only)
-        provider = self.provider_combo.currentText()
-        if provider != "Ollama (Local)":
-            config = get_model_pricing(model_name)
-            batch = config.get("batch_size", 10)
-            if batch != self.batch_spin.value():
-                self.batch_spin.setValue(batch)
+        # Skip during initial load — saved values should be preserved
+        if not self._loading:
+            provider = self.provider_combo.currentText()
+            if provider != "Ollama (Local)":
+                config = get_model_pricing(model_name)
+                batch = config.get("batch_size", 10)
+                if batch != self.batch_spin.value():
+                    self.batch_spin.setValue(batch)
 
     def _is_known_prompt_template(self, prompt: str) -> bool:
         """Check if the prompt matches any known preset or auto-generated template."""

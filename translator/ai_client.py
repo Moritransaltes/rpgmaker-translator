@@ -314,7 +314,7 @@ MODEL_PRICING = {
 
 # Default workers for cloud vs local
 CLOUD_DEFAULT_WORKERS = 4
-LOCAL_DEFAULT_WORKERS = 2
+LOCAL_DEFAULT_WORKERS = 1
 
 
 def get_model_pricing(model: str) -> dict:
@@ -441,7 +441,8 @@ class AIClient:
             "model": self.model,
             "messages": messages,
             "stream": stream,
-            "think": False,   # Disable Qwen3 chain-of-thought (huge speed win)
+            "think": False,    # Disable Qwen3 chain-of-thought (huge speed win)
+            "keep_alive": -1,  # Keep model loaded in VRAM indefinitely
             **kwargs,
         }
         r = requests.post(
@@ -451,6 +452,70 @@ class AIClient:
         )
         r.raise_for_status()
         return r.json()
+
+    def preload_model(self) -> bool:
+        """Load the model into VRAM without generating anything.
+
+        Sends a blank request with keep_alive=-1 so the model stays resident.
+        Returns True if the model was loaded successfully.
+        """
+        if self.is_cloud:
+            return True  # Cloud APIs don't need preloading
+        try:
+            r = requests.post(
+                f"{self.base_url}/api/chat",
+                json={
+                    "model": self.model,
+                    "messages": [],
+                    "keep_alive": -1,
+                },
+                timeout=120,  # Model load can take a while
+            )
+            return r.status_code == 200
+        except (requests.RequestException, OSError):
+            return False
+
+    def unload_models(self) -> int:
+        """Unload all models currently loaded in Ollama VRAM.
+
+        Uses GET /api/ps to list running models, then uses `ollama stop`
+        CLI command for each (more reliable than keep_alive=0 API).
+        Returns the number of models unloaded, or 0 on failure / cloud.
+        """
+        if self.is_cloud:
+            return 0
+        try:
+            r = requests.get(f"{self.base_url}/api/ps", timeout=10)
+            if r.status_code != 200:
+                return 0
+            models = r.json().get("models", [])
+            count = 0
+            for m in models:
+                name = m.get("name", "")
+                if not name:
+                    continue
+                # Use CLI stop command — more reliable than API keep_alive=0
+                try:
+                    subprocess.run(
+                        ["ollama", "stop", name],
+                        capture_output=True, timeout=15,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                    count += 1
+                    log.info("Stopped model: %s", name)
+                except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                    # Fallback to API method
+                    requests.post(
+                        f"{self.base_url}/api/generate",
+                        json={"model": name, "keep_alive": 0},
+                        timeout=10,
+                    )
+                    count += 1
+                    log.info("Unloaded model via API: %s", name)
+            return count
+        except (requests.RequestException, OSError) as exc:
+            log.debug("Failed to unload models: %s", exc)
+            return 0
 
     def _chat_openai(self, *, messages: list, timeout: int = 120, **kwargs) -> dict:
         """Send a chat request via the OpenAI-compatible SDK (cloud providers).
@@ -480,6 +545,19 @@ class AIClient:
             "temperature": options.get("temperature", 0),
             "max_tokens": options.get("num_predict", 1024),
         }
+
+        # JSON mode: enforce structured output for batch translation
+        fmt = kwargs.get("format")
+        json_schema = kwargs.get("json_schema")
+        if json_schema and self.provider != "Google Gemini":
+            # Strict JSON schema (DazedMTL style) — exact property validation
+            params["response_format"] = {
+                "type": "json_schema",
+                "json_schema": json_schema,
+            }
+        elif fmt == "json":
+            # Generic JSON mode — ensures valid JSON output
+            params["response_format"] = {"type": "json_object"}
 
         # Provider-specific adjustments (ported from DazedMTL)
         model_config = get_model_pricing(self.model)
@@ -717,6 +795,81 @@ class AIClient:
             return result if result else text
         except requests.RequestException:
             return text
+
+    def translate_names_batch(self, items: list[tuple[str, str, str]]) -> dict[str, str]:
+        """Translate multiple short strings (names, titles) in one API call.
+
+        Args:
+            items: List of (key, text, hint) tuples.
+
+        Returns:
+            Dict mapping key -> translated text.  Missing/failed keys
+            are omitted; caller should fall back to originals.
+        """
+        if not items:
+            return {}
+
+        # Build JSON payload  {key: text}
+        payload = {key: text for key, text, _hint in items}
+
+        # Collect glossary from all texts combined
+        all_text = "\n".join(text for _key, text, _hint in items)
+        filtered_glossary = self._filter_glossary(all_text)
+
+        user_msg = ""
+        if filtered_glossary:
+            glossary_str = "\n".join(f"  {jp} → {en}" for jp, en in filtered_glossary.items())
+            user_msg += f"REQUIRED glossary — use these EXACT translations:\n{glossary_str}\n\n"
+
+        payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
+        user_msg += (
+            "Translate the following JSON. Each value is a short name, title, or description from an RPG game.\n"
+            "Respond with ONLY a JSON object using the EXACT same keys, "
+            "where each value is the translated text:\n\n"
+            f"{payload_json}"
+        )
+
+        name_sys = (
+            _build_name_prompt(self.target_language) + "\n\n"
+            "CRITICAL: You must respond with a valid JSON object. "
+            "Use the exact same keys from the input. "
+            "Do not add any text outside the JSON."
+        )
+
+        num_predict = min(256 * len(items), 4096)
+
+        try:
+            data = self._chat(
+                messages=[
+                    {"role": "system", "content": name_sys},
+                    {"role": "user", "content": user_msg},
+                ],
+                timeout=60 + 10 * len(items),
+                format="json",
+                options={
+                    "temperature": 0,
+                    "seed": 42,
+                    "num_predict": num_predict,
+                    "num_ctx": min(8192, max(4096, 512 * len(items))),
+                },
+            )
+            raw = self._strip_thinking(data.get("message", {}).get("content", "").strip())
+            if not raw:
+                return {}
+        except requests.RequestException:
+            return {}
+
+        expected_keys = [key for key, *_ in items]
+        parsed = self._parse_batch_response(raw, expected_keys)
+
+        results = {}
+        for key, text, _hint in items:
+            translated = parsed.get(key, "")
+            if translated and translated != text:
+                if self.target_language == "Pig Latin":
+                    translated = _to_pig_latin(translated)
+                results[key] = translated
+        return results
 
     # ── Placeholder system ──────────────────────────────────────
 
@@ -1161,11 +1314,17 @@ class AIClient:
 
         return found
 
-    def translate_batch(self, entries: list[tuple[str, str, str, str]]) -> dict[str, str]:
+    def translate_batch(self, entries: list[tuple[str, str, str, str]],
+                        history: list[tuple[str, str]] | None = None) -> dict[str, str]:
         """Translate multiple entries in a single API call using JSON format.
+
+        Mirrors DazedMTL's batch approach: Line1/Line2 keys, JSON schema
+        enforcement for cloud APIs, translation history as context, and
+        length/content validation with retry.
 
         Args:
             entries: List of (key, original_text, context, field) tuples.
+            history: Recent translation pairs for context continuity.
 
         Returns:
             Dict mapping key -> translated text (with codes restored).
@@ -1185,6 +1344,30 @@ class AIClient:
             payload[key] = clean
             if code_map:
                 any_codes = True
+
+        # ── Build messages (DazedMTL-style structure) ──
+
+        # System prompt with batch instruction
+        batch_sys = (
+            self.system_prompt + "\n\n"
+            "CRITICAL: You must respond with a valid JSON object. "
+            "Use the exact same keys from the input. "
+            "Do not add any text outside the JSON."
+        )
+
+        messages = [{"role": "system", "content": batch_sys}]
+
+        # Translation history as context (DazedMTL passes previous translations)
+        if history:
+            history_lines = []
+            for hist_jp, hist_en in history[-10:]:
+                history_lines.append(f"JP: {hist_jp}")
+                history_lines.append(f"EN: {hist_en}")
+            messages.append({
+                "role": "system",
+                "content": "Translation History (for context — maintain consistent "
+                           "style and pronouns):\n" + "\n".join(history_lines),
+            })
 
         # Build user message (context/glossary/actors ONCE for entire batch)
         user_msg = ""
@@ -1228,39 +1411,61 @@ class AIClient:
             f"{payload_json}"
         )
 
-        # Build system prompt with batch instruction
-        batch_sys = (
-            self.system_prompt + "\n\n"
-            "CRITICAL: You must respond with a valid JSON object. "
-            "Use the exact same keys from the input. "
-            "Do not add any text outside the JSON."
-        )
+        messages.append({"role": "user", "content": user_msg})
 
-        num_predict = min(1024 * len(entries), 8192)
+        # ── Build JSON schema for cloud APIs (DazedMTL-style strict output) ──
+        expected_keys = [key for key, *_ in entries]
+        json_schema = None
+        if self.is_cloud:
+            json_schema = {
+                "name": "translation_response",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {k: {"type": "string"} for k in expected_keys},
+                    "required": list(expected_keys),
+                    "additionalProperties": False,
+                },
+            }
+
+        # Scale context window to fit input + output, but cap for local models
+        # Typical batch of 30 short dialogue lines: ~2000 tokens total
+        # System prompt + glossary: ~1000-1500 tokens
+        # Allow ~100 tokens per entry for input + output
+        num_predict = min(100 * len(entries), 8192)
+        num_ctx = max(4096, 1500 + 100 * len(entries) + num_predict)
+        if not self.is_cloud:
+            # Local models (Sugoi etc) degrade past 8K; cap to avoid VRAM bloat
+            num_ctx = min(num_ctx, 8192)
+            num_predict = min(num_predict, 4096)
 
         try:
             data = self._chat(
-                messages=[
-                    {"role": "system", "content": batch_sys},
-                    {"role": "user", "content": user_msg},
-                ],
+                messages=messages,
                 timeout=120 + 30 * len(entries),
                 format="json",
+                json_schema=json_schema,
                 options={
                     "temperature": 0,
                     "seed": 42,
                     "num_predict": num_predict,
-                    "num_ctx": max(4096, 2048 * len(entries)),
+                    "num_ctx": num_ctx,
                 },
             )
             raw = self._strip_thinking(data.get("message", {}).get("content", "").strip())
             if not raw:
-                raise ConnectionError("Ollama returned empty response for batch")
+                raise ConnectionError("Empty response for batch translation")
         except requests.RequestException as e:
-            raise ConnectionError(f"Ollama API error: {e}") from e
+            raise ConnectionError(f"API error: {e}") from e
 
-        expected_keys = [key for key, *_ in entries]
         parsed = self._parse_batch_response(raw, expected_keys)
+
+        # ── Validate batch response (DazedMTL-style checks) ──
+        if len(parsed) < len(entries) * 0.5:
+            # Less than half the entries returned — likely a bad response
+            raise ValueError(
+                f"Batch returned only {len(parsed)}/{len(entries)} entries"
+            )
 
         # Strip notes and restore control codes per-entry
         # Collect entries that still have Japanese for individual retry
@@ -1268,9 +1473,17 @@ class AIClient:
         retry_entries = []
         for key, translation in parsed.items():
             translation = self._strip_notes(translation)
+
+            # Content validation: empty or suspiciously short translations
+            orig = next((o for k, o, _c, _f in entries if k == key), "")
+            if not translation.strip():
+                retry_entries.append((key, orig, ""))
+                continue
+            if len(orig) > 10 and len(translation.strip()) <= 2:
+                retry_entries.append((key, orig, translation))
+                continue
+
             if self._contains_japanese(translation):
-                # Find the original text for this key
-                orig = next((o for k, o, _c, _f in entries if k == key), None)
                 if orig:
                     retry_entries.append((key, orig, translation))
                     continue
@@ -1280,9 +1493,9 @@ class AIClient:
                 translation = self._restore_codes(translation, code_maps[key])
             results[key] = translation
 
-        # Retry entries with Japanese via single translate() for better results
+        # Retry entries with Japanese or bad content via single translate()
         for key, original, bad_result in retry_entries:
-            log.info("Batch entry %s has Japanese — retrying individually", key)
+            log.info("Batch entry %s needs retry (Japanese/empty/short)", key)
             try:
                 ctx = next((c for k, _o, c, _f in entries if k == key), "")
                 fld = next((f for k, _o, _c, f in entries if k == key), "")
@@ -1290,9 +1503,10 @@ class AIClient:
                 results[key] = result
             except ConnectionError:
                 # Fall back to the bad result with codes restored
-                if code_maps.get(key):
+                if bad_result and code_maps.get(key):
                     bad_result = self._restore_codes(bad_result, code_maps[key])
-                results[key] = bad_result
+                if bad_result:
+                    results[key] = bad_result
 
         return results
 
@@ -1342,7 +1556,25 @@ class AIClient:
             "Do not add any text outside the JSON."
         )
 
-        num_predict = min(1024 * len(entries), 8192)
+        expected_keys = [key for key, _ in entries]
+        json_schema = None
+        if self.is_cloud:
+            json_schema = {
+                "name": "polish_response",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {k: {"type": "string"} for k in expected_keys},
+                    "required": list(expected_keys),
+                    "additionalProperties": False,
+                },
+            }
+
+        num_predict = min(100 * len(entries), 8192)
+        num_ctx = max(4096, 1500 + 100 * len(entries) + num_predict)
+        if not self.is_cloud:
+            num_ctx = min(num_ctx, 8192)
+            num_predict = min(num_predict, 4096)
 
         try:
             data = self._chat(
@@ -1352,20 +1584,20 @@ class AIClient:
                 ],
                 timeout=120 + 30 * len(entries),
                 format="json",
+                json_schema=json_schema,
                 options={
                     "temperature": 0,
                     "seed": 42,
                     "num_predict": num_predict,
-                    "num_ctx": max(4096, 2048 * len(entries)),
+                    "num_ctx": num_ctx,
                 },
             )
             raw = self._strip_thinking(data.get("message", {}).get("content", "").strip())
             if not raw:
-                raise ConnectionError("Ollama returned empty response for batch")
+                raise ConnectionError("Empty response for batch polish")
         except requests.RequestException as e:
-            raise ConnectionError(f"Ollama API error: {e}") from e
+            raise ConnectionError(f"API error: {e}") from e
 
-        expected_keys = [key for key, _ in entries]
         parsed = self._parse_batch_response(raw, expected_keys)
 
         results = {}
