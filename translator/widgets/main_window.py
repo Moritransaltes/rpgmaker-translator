@@ -2179,6 +2179,9 @@ class MainWindow(QMainWindow):
             import shutil
             # Atomic swap: rename current → temp, copy backup → data, delete temp
             temp_dir = data_dir + "_restoring"
+            # Clean up leftover temp dir from a previously interrupted restore
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
             os.rename(data_dir, temp_dir)
             try:
                 shutil.copytree(backup_dir, data_dir)

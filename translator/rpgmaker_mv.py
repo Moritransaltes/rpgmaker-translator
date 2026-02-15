@@ -510,6 +510,15 @@ class RPGMakerMVParser:
                         if parts[2] not in params:
                             continue
                         if len(parts) <= 3:
+                            # Check if value was JSON-encoded string scalar
+                            raw_val = params[parts[2]]
+                            try:
+                                decoded = json.loads(raw_val)
+                                if isinstance(decoded, str):
+                                    params[parts[2]] = json.dumps(entry.translation, ensure_ascii=False)
+                                    continue
+                            except (json.JSONDecodeError, ValueError):
+                                pass
                             params[parts[2]] = entry.translation
                         else:
                             try:
@@ -1329,7 +1338,8 @@ class RPGMakerMVParser:
                     expr = params[4] if isinstance(params[4], str) else ""
                     m = _CONTROL_VAR_STRING_RE.match(expr)
                     if m:
-                        text = m.group(1)
+                        # Unescape JS string escapes (\" → ", \\ → \, etc.)
+                        text = re.sub(r'\\(.)', r'\1', m.group(1))
                         if text and _has_japanese(text):
                             var_id = params[0]
                             dialog_counter += 1
@@ -1586,8 +1596,8 @@ class RPGMakerMVParser:
 
     def _apply_translation_inner(self, data, entry, parts, filename):
         """Inner logic for _apply_translation (split out for safe int parsing)."""
-        # Database entries: "Actors.json/1/name"
-        if filename in DATABASE_FILES and len(parts) >= 3:
+        # Database entries: "Actors.json/1/name" (parts[1] must be numeric)
+        if filename in DATABASE_FILES and len(parts) >= 3 and parts[1].isdigit():
             item_id = int(parts[1])
             field_name = parts[2]
             if isinstance(data, list):
@@ -2329,7 +2339,17 @@ class RPGMakerMVParser:
                 continue
 
             if not nested_path:
-                # Simple string replacement
+                # Check if original value was a JSON-encoded string scalar
+                raw_val = params[param_key]
+                try:
+                    decoded = json.loads(raw_val)
+                    if isinstance(decoded, str):
+                        # Re-encode to preserve JSON string wrapping
+                        params[param_key] = json.dumps(entry.translation, ensure_ascii=False)
+                        continue
+                except (json.JSONDecodeError, ValueError):
+                    pass
+                # Plain string replacement
                 params[param_key] = entry.translation
             else:
                 # Nested: parse JSON, navigate path, replace, re-serialize
