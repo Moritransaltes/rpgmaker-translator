@@ -321,6 +321,8 @@ class EventViewerPanel(QWidget):
             self._show_event(self._current_prefix)
             if 0 <= saved_row < len(self._current_entries):
                 self._detail_table.setCurrentCell(saved_row, 0)
+                # Qt skips currentCellChanged if same row — update editors manually
+                self._on_row_selected(saved_row, 0, -1, -1)
             self._detail_table.verticalScrollBar().setValue(scroll_val)
         self._refresh_tree_stats()
 
@@ -565,6 +567,10 @@ class EventViewerPanel(QWidget):
 
         self._detail_table.blockSignals(False)
 
+        # Auto-select first row so editors populate
+        if entries:
+            self._detail_table.setCurrentCell(0, 0)
+
     def _apply_row_colors(self, row: int, entry):
         """Apply Catppuccin colors to a detail table row."""
         if self._dark_mode:
@@ -617,8 +623,8 @@ class EventViewerPanel(QWidget):
     def _on_row_selected(self, row: int, col: int, prev_row: int, prev_col: int):
         """Update editor panel when a row is selected."""
         if row < 0 or row >= len(self._current_entries):
-            self._orig_editor.clear()
             self._trans_editor.blockSignals(True)
+            self._orig_editor.clear()
             self._trans_editor.clear()
             self._trans_editor.blockSignals(False)
             self._selected_row = -1

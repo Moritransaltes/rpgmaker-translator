@@ -578,8 +578,8 @@ class TranslationTable(QWidget):
         """Handle edits made via the table's inline editor or refresh."""
         # Propagate inline edits to duplicates in master view
         row = getattr(self._model, '_last_inline_edit_row', -1)
+        self._model._last_inline_edit_row = -1  # Always reset flag
         if row >= 0 and self.master_check.isChecked():
-            self._model._last_inline_edit_row = -1
             if 0 <= row < len(self._visible_entries):
                 self._propagate_to_duplicates(self._visible_entries[row])
         self._update_stats()
