@@ -208,7 +208,7 @@ class MainWindow(QMainWindow):
     # Map displayNames are keyed by Map###.json — matched dynamically
     _AUTO_GLOSSARY_MAP_FIELD = "displayName"
     # Fields where each word should be capitalized (names, titles, places)
-    _CAPITALIZE_FIELDS = {"name", "nickname", "displayName"}
+    _CAPITALIZE_FIELDS = {"name", "nickname", "displayName", "speaker_name"}
     # Words to leave lowercase in title case (prepositions, articles, conjunctions)
     _TITLE_SMALL_WORDS = {
         "a", "an", "the", "of", "in", "on", "at", "to", "for", "and",
@@ -1128,7 +1128,8 @@ class MainWindow(QMainWindow):
             and entry.file.endswith(".json")
             and entry.field == self._AUTO_GLOSSARY_MAP_FIELD
         )
-        if not is_map_name and (not fields or entry.field not in fields):
+        is_speaker = entry.field == "speaker_name"
+        if not is_map_name and not is_speaker and (not fields or entry.field not in fields):
             return
         jp = entry.original
         en = entry.translation

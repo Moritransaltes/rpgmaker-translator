@@ -262,6 +262,7 @@ All pushed to master. Recent commits in order:
 
 ### Priority 4 — UI Enhancements
 - [ ] Event Viewer panel — groups all entries by event (CE169, Ev3/p0, etc.), lets user browse a single event's dialogue in sequence, useful for cross-referencing between game versions
+- [ ] Spell checker — `pyspellchecker` + `QSyntaxHighlighter` on translation editor, red underlines on misspelled words, right-click suggestions + "Add to Dictionary", skips control codes/placeholders (English only)
 
 ### Priority 5 — Coverage Expansion
 - [ ] VX Ace (.rvdata2), XP (.rxdata), VX (.rvdata) support via `rubymarshal`

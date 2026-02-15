@@ -252,7 +252,19 @@ class RPGMakerMVParser:
         entries.extend(self._parse_troops(data_dir))
         entries.extend(self._parse_maps(data_dir))
         entries.extend(self._parse_plugins(project_dir))
-        return entries
+
+        # Deduplicate speaker names globally — one entry per unique name.
+        # Same speaker (e.g. 夢魔) may appear across many files;
+        # we translate once and export applies to all occurrences.
+        seen_speaker_originals = set()
+        deduped = []
+        for e in entries:
+            if e.field == "speaker_name":
+                if e.original in seen_speaker_originals:
+                    continue
+                seen_speaker_originals.add(e.original)
+            deduped.append(e)
+        return deduped
 
     def load_project_raw(self, project_dir: str) -> list:
         """Load ALL text entries regardless of language.
@@ -384,10 +396,15 @@ class RPGMakerMVParser:
         backup_dir = data_dir + "_original"
         source_dir = backup_dir if os.path.isdir(backup_dir) else data_dir
 
-        # Group entries by file
+        # Build global speaker name lookup (one translation applies to all files)
+        global_speakers = {}
         by_file = {}
         for e in entries:
-            if e.translation and e.status in ("translated", "reviewed"):
+            if not (e.translation and e.status in ("translated", "reviewed")):
+                continue
+            if e.field == "speaker_name":
+                global_speakers[e.original] = e.translation
+            else:
                 by_file.setdefault(e.file, []).append(e)
 
         for filename, file_entries in by_file.items():
@@ -398,7 +415,8 @@ class RPGMakerMVParser:
             with open(source_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            self._apply_translations_fast(data, file_entries)
+            self._apply_translations_fast(
+                data, file_entries, global_speakers=global_speakers)
 
             # Always write to the live data/ directory
             out_path = os.path.join(data_dir, filename)
@@ -440,10 +458,15 @@ class RPGMakerMVParser:
         # Relative path from project root to data dir (e.g. "data" or "www/data")
         data_rel = os.path.relpath(data_dir, project_dir).replace("\\", "/")
 
-        # Group translated entries by file
+        # Build global speaker lookup + group entries by file
+        global_speakers = {}
         by_file = {}
         for e in entries:
-            if e.translation and e.status in ("translated", "reviewed"):
+            if not (e.translation and e.status in ("translated", "reviewed")):
+                continue
+            if e.field == "speaker_name":
+                global_speakers[e.original] = e.translation
+            else:
                 by_file.setdefault(e.file, []).append(e)
 
         # Determine js/ relative path for plugins
@@ -470,8 +493,10 @@ class RPGMakerMVParser:
                     data = json.load(f)
 
                 file_entries = by_file.get(filename, [])
-                if file_entries:
-                    self._apply_translations_fast(data, file_entries)
+                if file_entries or global_speakers:
+                    self._apply_translations_fast(
+                        data, file_entries,
+                        global_speakers=global_speakers)
 
                 arc_path = f"_translation/{data_rel}/{filename}"
                 zf.writestr(arc_path,
@@ -1067,6 +1092,7 @@ class RPGMakerMVParser:
         if not isinstance(data, list):
             return entries
 
+        seen_speakers = set()
         for event in data:
             if not event or not isinstance(event, dict):
                 continue
@@ -1074,7 +1100,8 @@ class RPGMakerMVParser:
             event_name = event.get("name", "")
             cmd_list = event.get("list", [])
             entries.extend(self._extract_event_commands(
-                cmd_list, "CommonEvents.json", f"CE{event_id}({event_name})"
+                cmd_list, "CommonEvents.json", f"CE{event_id}({event_name})",
+                seen_speakers=seen_speakers,
             ))
 
         return entries
@@ -1094,6 +1121,7 @@ class RPGMakerMVParser:
         if not isinstance(data, list):
             return entries
 
+        seen_speakers = set()
         for troop in data:
             if not troop or not isinstance(troop, dict):
                 continue
@@ -1110,7 +1138,8 @@ class RPGMakerMVParser:
                 cmd_list = page.get("list", [])
                 prefix = f"Troop{troop_id}({troop_name})/p{page_idx}"
                 entries.extend(self._extract_event_commands(
-                    cmd_list, "Troops.json", prefix
+                    cmd_list, "Troops.json", prefix,
+                    seen_speakers=seen_speakers,
                 ))
 
         return entries
@@ -1143,6 +1172,7 @@ class RPGMakerMVParser:
             if not isinstance(events, list):
                 continue
 
+            seen_speakers = set()
             for event in events:
                 if not event or not isinstance(event, dict):
                     continue
@@ -1156,18 +1186,21 @@ class RPGMakerMVParser:
                     cmd_list = page.get("list", [])
                     prefix = f"Ev{event_id}({event_name})/p{page_idx}"
                     entries.extend(self._extract_event_commands(
-                        cmd_list, filename, prefix
+                        cmd_list, filename, prefix,
+                        seen_speakers=seen_speakers,
                     ))
 
         return entries
 
     # ── Private: event command extraction ──────────────────────────────
 
-    def _extract_event_commands(self, cmd_list: list, filename: str, prefix: str) -> list:
+    def _extract_event_commands(self, cmd_list: list, filename: str, prefix: str,
+                                seen_speakers: set = None) -> list:
         """Extract translatable text from a list of event commands.
 
         Groups consecutive 401 (Show Text) commands into single dialogue blocks.
         Reads 101 (Show Text Header) to identify the speaker for each block.
+        Extracts unique MZ speaker names from 101 param[4] for translation.
         """
         entries = []
         recent_ctx = deque(maxlen=self.context_size)  # O(1) sliding window for context
@@ -1191,6 +1224,17 @@ class RPGMakerMVParser:
                 face_name = params[0] if len(params) > 0 else ""
                 speaker_name = params[4] if len(params) > 4 else ""
                 current_speaker = speaker_name if speaker_name else face_name
+                # Extract MZ speaker name for translation (deduplicated per file)
+                if (speaker_name and self._should_extract(speaker_name)
+                        and seen_speakers is not None
+                        and speaker_name not in seen_speakers):
+                    seen_speakers.add(speaker_name)
+                    entries.append(TranslationEntry(
+                        id=f"{filename}/speaker/{speaker_name}",
+                        file=filename,
+                        field="speaker_name",
+                        original=speaker_name,
+                    ))
                 i += 1
                 continue
 
@@ -1697,6 +1741,26 @@ class RPGMakerMVParser:
     def _align_cmd_lists(self, donor_cmds: list, proj_cmds: list,
                          text_map: dict):
         """Align two command lists and add paired texts to text_map."""
+        # Pair 101 speaker names by position
+        proj_speakers = []
+        donor_speakers = []
+        for cmd in proj_cmds:
+            if (isinstance(cmd, dict) and cmd.get("code") == CODE_SHOW_TEXT_HEADER
+                    and len(cmd.get("parameters", [])) > 4):
+                name = cmd["parameters"][4]
+                if name:
+                    proj_speakers.append(name)
+        for cmd in donor_cmds:
+            if (isinstance(cmd, dict) and cmd.get("code") == CODE_SHOW_TEXT_HEADER
+                    and len(cmd.get("parameters", [])) > 4):
+                name = cmd["parameters"][4]
+                if name:
+                    donor_speakers.append(name)
+        for ps, ds in zip(proj_speakers, donor_speakers):
+            if ps and ds and ps != ds:
+                text_map[ps] = ds
+
+        # Pair dialog/choice blocks via structural alignment
         items_donor = self._extract_structural_items(donor_cmds)
         items_proj = self._extract_structural_items(proj_cmds)
 
@@ -1718,25 +1782,33 @@ class RPGMakerMVParser:
 
     # ── Private: apply translation back to JSON ────────────────────────
 
-    def _apply_translations_fast(self, data, entries: list):
+    def _apply_translations_fast(self, data, entries: list,
+                                global_speakers: dict = None):
         """Apply all translations for a file in a single pass.
 
         DB / System / displayName / plugin entries use direct indexed lookup
         (fast, O(1) per entry).  Dialog / scroll / choice entries are batched
         and applied in one walk of the event command lists — O(commands)
         instead of O(entries × commands).
+
+        Args:
+            global_speakers: Optional {original_name: translation} dict for
+                101 speaker names, built globally in save_project().
         """
         from collections import deque
 
         scan_entries = []
+        speaker_lookup = dict(global_speakers) if global_speakers else {}
         for entry in entries:
             if entry.field in ("dialog", "scroll_text", "choice"):
                 scan_entries.append(entry)
+            elif entry.field == "speaker_name":
+                speaker_lookup[entry.original] = entry.translation
             else:
                 # DB / System / plugin entries — already O(1)
                 self._apply_translation(data, entry)
 
-        if not scan_entries:
+        if not scan_entries and not speaker_lookup:
             return
 
         # Build lookup dicts keyed by first original line
@@ -1764,6 +1836,8 @@ class RPGMakerMVParser:
         code_choice = CODE_SHOW_CHOICES
         single_401 = self.single_401_mode
 
+        code_header = CODE_SHOW_TEXT_HEADER
+
         def process_commands(cmd_list):
             i = 0
             while i < len(cmd_list):
@@ -1772,6 +1846,14 @@ class RPGMakerMVParser:
                     i += 1
                     continue
                 code = cmd.get("code", 0)
+
+                # Speaker name in 101 header param[4]
+                if code == code_header and speaker_lookup:
+                    params = cmd.get("parameters", [])
+                    if len(params) > 4 and params[4] in speaker_lookup:
+                        params[4] = speaker_lookup[params[4]]
+                    i += 1
+                    continue
 
                 # Dialog block (401)
                 if code == code_dialog and dialog_lookup:

@@ -1119,6 +1119,7 @@ class AIClient:
         "plugin_command": "plugin command text",
         "plugin_param": "plugin configuration text",
         "script_variable": "quest/UI text stored in game variable",
+        "speaker_name": "character name shown in dialogue name box",
     }
 
     def translate(self, text: str, context: str = "",
