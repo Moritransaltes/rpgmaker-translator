@@ -11,7 +11,8 @@ from collections import Counter
 from PyQt6.QtWidgets import (
     QMainWindow, QSplitter, QToolBar, QStatusBar, QProgressBar,
     QFileDialog, QMessageBox, QLabel, QWidget, QVBoxLayout, QApplication,
-    QProgressDialog, QMenu, QInputDialog, QDialog, QTabWidget,
+    QProgressDialog, QMenu, QInputDialog, QDialog, QTabWidget, QCheckBox,
+    QDialogButtonBox,
 )
 from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QAction, QPalette, QColor
@@ -1567,26 +1568,43 @@ class MainWindow(QMainWindow):
             swap = (reply == QMessageBox.StandardButton.Yes)
 
         current_untranslated = self.project.untranslated_count
-        reply = QMessageBox.question(
-            self, "Import from Game Folder",
+
+        # --- Import options dialog ---
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Import from Game Folder")
+        dlg_layout = QVBoxLayout(dlg)
+
+        info_label = QLabel(
             f"Donor game: {len(donor_entries)} text entries\n"
             f"Current project: {self.project.total} entries "
-            f"({current_untranslated} untranslated)\n\n"
-            "This will match entries by file position and import\n"
-            "translations where the text differs.\n\n"
-            "Continue?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+            f"({current_untranslated} untranslated)")
+        dlg_layout.addWidget(info_label)
+
+        cross_version_cb = QCheckBox(
+            "Cross-version text matching (use when game versions differ)")
+        cross_version_cb.setToolTip(
+            "Matches entries by structural position when IDs don't align.\n"
+            "May normalise near-duplicate lines — leave OFF for faithful import.")
+        dlg_layout.addWidget(cross_version_cb)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        dlg_layout.addWidget(buttons)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
-        # Build structural translation map for cross-version matching
+        # Build structural translation map only if opted in
         text_map = {}
-        try:
-            text_map = parser.build_cross_version_map(
-                folder, self.project.project_path)
-        except Exception:
-            pass  # Fall back to ID-only matching
+        if cross_version_cb.isChecked():
+            try:
+                text_map = parser.build_cross_version_map(
+                    folder, self.project.project_path)
+            except Exception:
+                pass  # Fall back to ID-only matching
 
         stats = self.project.import_from_game_folder(
             donor_entries, swap=swap, text_map=text_map)
@@ -1599,8 +1617,8 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self, "Import Complete",
             f"Imported {total_imported} translations:\n"
-            f"  \u2022 {stats['by_text']} matched by structure (cross-version safe)\n"
-            f"  \u2022 {stats['imported']} matched by ID (database entries)\n"
+            f"  \u2022 {stats['by_text']} matched by structure\n"
+            f"  \u2022 {stats['imported']} matched by ID\n"
             f"  \u2022 {stats['identical']} identical (not translated in donor)\n"
             f"  \u2022 {stats['new']} new entries (need translation)\n"
             f"  \u2022 {stats['skipped']} already translated (kept)\n"
@@ -2106,7 +2124,6 @@ class MainWindow(QMainWindow):
             return
 
         # Confirmation dialog with checkbox
-        from PyQt6.QtWidgets import QCheckBox, QDialogButtonBox
         dlg = QDialog(self)
         dlg.setWindowTitle("Apply Translation to Game")
         layout = QVBoxLayout(dlg)
@@ -3159,7 +3176,6 @@ class MainWindow(QMainWindow):
         cpl = self.plugin_analyzer.chars_per_line
         summary = self.plugin_analyzer.get_summary()
 
-        from PyQt6.QtWidgets import QCheckBox, QDialogButtonBox
         dlg = QDialog(self)
         dlg.setWindowTitle("Apply Word Wrap")
         dlg.setMinimumWidth(420)
