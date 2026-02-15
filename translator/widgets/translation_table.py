@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableView,
     QLineEdit, QComboBox, QLabel, QMenu, QAbstractItemView, QHeaderView,
     QInputDialog, QMessageBox, QTextEdit, QSplitter, QGroupBox, QCheckBox,
-    QPushButton, QTreeWidget, QTreeWidgetItem,
+    QPushButton, QTableWidget, QTableWidgetItem, QTabWidget,
 )
 from PyQt6.QtCore import (
     pyqtSignal, Qt, QTimer, QAbstractTableModel, QModelIndex,
@@ -207,6 +207,7 @@ class TranslationTable(QWidget):
         self._entries = []           # current file-filtered subset (or all)
         self._visible_entries = []   # after search + status filter
         self._dark_mode = True  # Match main_window default
+        self._speaker_lookup = {}  # JP→EN speaker name lookup
         self._filter_timer = QTimer(self)
         self._filter_timer.setSingleShot(True)
         self._filter_timer.setInterval(250)  # 250ms debounce
@@ -338,10 +339,10 @@ class TranslationTable(QWidget):
 
         vsplit.addWidget(self.table)
 
-        # ── Editor + Context panel ─────────────────────────────────
-        editor_split = QSplitter(Qt.Orientation.Vertical)
+        # ── Tabbed bottom panel: Editor + Event Context ─────────────
+        self.bottom_tabs = QTabWidget()
 
-        # Top: side-by-side editors
+        # Tab 0: side-by-side editors
         editor_widget = QWidget()
         editor_layout = QHBoxLayout(editor_widget)
         editor_layout.setContentsMargins(0, 0, 0, 0)
@@ -359,7 +360,7 @@ class TranslationTable(QWidget):
         editor_layout.addWidget(orig_group)
 
         # Right: translation (editable, with code-insert right-click menu)
-        trans_group = QGroupBox("Translation (EN) — editable")
+        trans_group = QGroupBox("Translation (EN) \u2014 editable")
         trans_box = QVBoxLayout(trans_group)
         self.trans_editor = QTextEdit()
         self.trans_editor.setAcceptRichText(False)
@@ -370,33 +371,44 @@ class TranslationTable(QWidget):
         trans_box.addWidget(self.trans_editor)
         editor_layout.addWidget(trans_group)
 
-        editor_split.addWidget(editor_widget)
+        self.bottom_tabs.addTab(editor_widget, "Editor")
 
-        # Bottom: event context pane — mini side-by-side JP|EN table
-        context_group = QGroupBox("Event Context")
-        context_box = QVBoxLayout(context_group)
-        context_box.setContentsMargins(4, 4, 4, 4)
-        self.context_tree = QTreeWidget()
-        self.context_tree.setHeaderLabels(["Speaker", "Original (JP)", "Translation (EN)"])
-        self.context_tree.setColumnCount(3)
-        self.context_tree.setRootIsDecorated(False)
-        self.context_tree.setAlternatingRowColors(True)
-        self.context_tree.setWordWrap(True)
-        self.context_tree.itemClicked.connect(self._on_context_item_clicked)
-        self.context_tree.itemChanged.connect(self._on_context_item_edited)
-        # Column sizing: speaker narrow, JP and EN share remaining space equally
-        ctx_header = self.context_tree.header()
-        ctx_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        ctx_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        ctx_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        context_box.addWidget(self.context_tree)
-        editor_split.addWidget(context_group)
+        # Tab 1: event context table (full width for readability)
+        context_widget = QWidget()
+        ctx_layout = QVBoxLayout(context_widget)
+        ctx_layout.setContentsMargins(4, 4, 4, 4)
+        ctx_layout.setSpacing(2)
 
-        # Editor split: 60% editors, 40% context
-        editor_split.setStretchFactor(0, 6)
-        editor_split.setStretchFactor(1, 4)
+        self.ctx_title = QLabel("Event Context")
+        self.ctx_title.setStyleSheet("font-weight: bold;")
+        ctx_layout.addWidget(self.ctx_title)
 
-        vsplit.addWidget(editor_split)
+        self.context_table = QTableWidget()
+        self.context_table.setColumnCount(3)
+        self.context_table.setHorizontalHeaderLabels(
+            ["Speaker", "Original (JP)", "Translation (EN)"])
+        self.context_table.setWordWrap(True)
+        self.context_table.verticalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents)
+        self.context_table.verticalHeader().setVisible(False)
+        self.context_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows)
+        self.context_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked)
+        self.context_table.setAlternatingRowColors(False)
+        # Column sizing
+        ch = self.context_table.horizontalHeader()
+        ch.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        ch.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        ch.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.context_table.cellClicked.connect(self._on_context_cell_clicked)
+        self.context_table.cellChanged.connect(self._on_context_cell_changed)
+        ctx_layout.addWidget(self.context_table)
+
+        self.bottom_tabs.addTab(context_widget, "Event Context")
+        self.bottom_tabs.currentChanged.connect(self._on_tab_changed)
+
+        vsplit.addWidget(self.bottom_tabs)
 
         # Default split: 70% table, 30% editor+context
         vsplit.setStretchFactor(0, 7)
@@ -425,6 +437,7 @@ class TranslationTable(QWidget):
         """Load full project entries into the table."""
         self._all_entries = entries
         self._entries = entries
+        self._build_speaker_lookup()
         self._populate_speaker_filter(entries)
         self._apply_filter()
 
@@ -647,6 +660,12 @@ class TranslationTable(QWidget):
         add_gen_glossary = QAction("Add to General Glossary...", self)
         add_gen_glossary.triggered.connect(lambda: self._add_row_to_glossary("general"))
         menu.addAction(add_gen_glossary)
+
+        menu.addSeparator()
+
+        ctx_action = QAction("Show Event Context", self)
+        ctx_action.triggered.connect(self._show_context_pane)
+        menu.addAction(ctx_action)
 
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
@@ -932,7 +951,7 @@ class TranslationTable(QWidget):
             self._selected_row = -1
             self.orig_editor.clear()
             self.trans_editor.clear()
-            self.context_tree.clear()
+            self.context_table.setRowCount(0)
             return
 
         self._selected_row = row
@@ -944,7 +963,8 @@ class TranslationTable(QWidget):
         self.trans_editor.setPlainText(entry.translation)
         self.trans_editor.blockSignals(False)
 
-        self._update_context_pane(entry)
+        if self.bottom_tabs.currentIndex() == 1:
+            self._update_context_pane(entry)
 
     @staticmethod
     def _event_prefix(entry_id: str) -> str:
@@ -956,18 +976,43 @@ class TranslationTable(QWidget):
         idx = entry_id.rfind("/")
         return entry_id[:idx] if idx > 0 else ""
 
+    def _build_speaker_lookup(self):
+        """Build JP->EN speaker name lookup from speaker_name and actor entries."""
+        self._speaker_lookup = {}
+        for e in self._all_entries:
+            if e.field == "speaker_name" and e.translation:
+                self._speaker_lookup[e.original.strip()] = e.translation.strip()
+            elif e.field == "name" and e.file == "Actors.json" and e.translation:
+                self._speaker_lookup[e.original.strip()] = e.translation.strip()
+
+    def _show_context_pane(self):
+        """Switch to the Event Context tab and populate it."""
+        self.bottom_tabs.setCurrentIndex(1)
+
+    def _hide_context_pane(self):
+        """Switch back to the Editor tab."""
+        self.bottom_tabs.setCurrentIndex(0)
+
+    def _on_tab_changed(self, index: int):
+        """When switching to context tab, populate it for the current row."""
+        if index == 1 and 0 <= self._selected_row < len(self._visible_entries):
+            self._update_context_pane(self._visible_entries[self._selected_row])
+
     def _update_context_pane(self, selected_entry):
-        """Show surrounding entries from the same event in the context tree."""
-        self.context_tree.clear()
+        """Show surrounding entries from the same event in the context table."""
+        self.context_table.blockSignals(True)
+        self.context_table.setRowCount(0)
 
         prefix = self._event_prefix(selected_entry.id)
         if not prefix:
+            self.context_table.blockSignals(False)
             return
 
         # Find all entries from the same event (search ALL entries, not just visible)
         event_entries = [e for e in self._all_entries
                          if e.id.startswith(prefix + "/")]
         if not event_entries:
+            self.context_table.blockSignals(False)
             return
 
         # Find selected entry's position in the event
@@ -977,92 +1022,140 @@ class TranslationTable(QWidget):
                 sel_idx = i
                 break
 
-        # Show ~10 before + selected + ~10 after (or full event if small)
-        radius = 10
-        if len(event_entries) <= radius * 2 + 1:
-            start, end = 0, len(event_entries)
-        else:
-            start = max(0, sel_idx - radius)
-            end = min(len(event_entries), sel_idx + radius + 1)
+        # Show the full event
+        start, end = 0, len(event_entries)
 
-        # Update group box title with event name
+        # Update header title
         ctx_display = _extract_event_context(selected_entry.id)
-        parent_group = self.context_tree.parent()
-        if isinstance(parent_group, QGroupBox):
-            count_info = f"{len(event_entries)} entries"
-            parent_group.setTitle(
-                f"Event Context — {ctx_display} ({count_info})"
-                if ctx_display else "Event Context")
+        count_info = f"{len(event_entries)} entries"
+        self.ctx_title.setText(
+            f"Event Context \u2014 {ctx_display} ({count_info})"
+            if ctx_display else "Event Context")
 
-        highlight_item = None
-        for i in range(start, end):
+        # Theme colors
+        if self._dark_mode:
+            base_bg = QColor("#1e1e2e")
+            alt_bg = QColor("#181825")
+            sel_bg = QColor("#45475a")
+            text_fg = QColor("#bac2de")
+            sel_fg = QColor("#cdd6f4")
+            untrans_fg = QColor("#f38ba8")
+            speaker_fg = QColor("#89b4fa")
+            speaker_sel_fg = QColor("#89dceb")
+        else:
+            base_bg = QColor("#ffffff")
+            alt_bg = QColor("#f5f5f5")
+            sel_bg = QColor("#cce0ff")
+            text_fg = QColor("#333333")
+            sel_fg = QColor("#000000")
+            untrans_fg = QColor("#cc3333")
+            speaker_fg = QColor("#0066cc")
+            speaker_sel_fg = QColor("#004499")
+
+        self.context_table.setRowCount(end - start)
+        highlight_row = -1
+
+        for row_idx, i in enumerate(range(start, end)):
             e = event_entries[i]
             # Extract speaker from context
-            speaker = ""
+            speaker_jp = ""
             if e.context:
                 for line in e.context.split("\n"):
                     if line.startswith("[Speaker:"):
-                        speaker = line.strip("[]").replace("Speaker: ", "")
+                        speaker_jp = line.strip("[]").replace("Speaker: ", "")
                         break
 
-            orig = e.original.replace("\n", " ")
-            trans = e.translation.replace("\n", " ") if e.translation else ""
+            # Translate speaker name
+            speaker_en = self._speaker_lookup.get(speaker_jp, "") if speaker_jp else ""
+            speaker_display = speaker_en or speaker_jp
 
-            item = QTreeWidgetItem([speaker, orig, trans])
-            item.setData(0, Qt.ItemDataRole.UserRole, e.id)
-            # Make EN column editable
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+            orig = e.original
+            trans = e.translation or ""
 
-            # Highlight the selected entry
-            if i == sel_idx:
-                font = item.font(0)
+            # Speaker column (read-only)
+            spk_item = QTableWidgetItem(speaker_display)
+            spk_item.setFlags(
+                Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+            spk_item.setData(Qt.ItemDataRole.UserRole, e.id)
+            if speaker_jp and speaker_en and speaker_en != speaker_jp:
+                spk_item.setToolTip(f"JP: {speaker_jp}")
+            self.context_table.setItem(row_idx, 0, spk_item)
+
+            # Original column (read-only)
+            orig_item = QTableWidgetItem(orig)
+            orig_item.setFlags(
+                Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+            self.context_table.setItem(row_idx, 1, orig_item)
+
+            # Translation column (editable via double-click)
+            trans_item = QTableWidgetItem(trans)
+            self.context_table.setItem(row_idx, 2, trans_item)
+
+            # Apply colors
+            is_selected = (i == sel_idx)
+            if is_selected:
+                highlight_row = row_idx
+                bg = sel_bg
+                fg = sel_fg
+                font = spk_item.font()
                 font.setBold(True)
                 for col in range(3):
-                    item.setFont(col, font)
-                    item.setBackground(col, QColor("#45475a"))
-                    item.setForeground(col, QColor("#cdd6f4"))
-                highlight_item = item
-            elif e.status == "untranslated":
-                red = QColor("#f38ba8")
+                    item = self.context_table.item(row_idx, col)
+                    item.setBackground(bg)
+                    item.setForeground(fg)
+                    item.setFont(font)
+            else:
+                bg = base_bg if row_idx % 2 == 0 else alt_bg
+                fg = untrans_fg if e.status == "untranslated" else text_fg
                 for col in range(3):
-                    item.setForeground(col, red)
+                    item = self.context_table.item(row_idx, col)
+                    item.setBackground(bg)
+                    item.setForeground(fg)
 
-            self.context_tree.addTopLevelItem(item)
+            # Speaker name in accent color for readability
+            if speaker_display:
+                spk_item.setForeground(
+                    speaker_sel_fg if is_selected else speaker_fg)
 
-        # Scroll to keep selected entry visible
-        if highlight_item:
-            self.context_tree.scrollToItem(highlight_item)
+        self.context_table.blockSignals(False)
 
-    def _on_context_item_clicked(self, item: QTreeWidgetItem, column: int):
+        # Scroll to selected entry
+        if highlight_row >= 0:
+            self.context_table.scrollToItem(
+                self.context_table.item(highlight_row, 0))
+
+    def _on_context_cell_clicked(self, row: int, column: int):
         """Navigate the main table to the clicked context entry."""
-        entry_id = item.data(0, Qt.ItemDataRole.UserRole)
-        if entry_id:
-            self._select_entry_by_id(entry_id)
+        item = self.context_table.item(row, 0)
+        if item:
+            entry_id = item.data(Qt.ItemDataRole.UserRole)
+            if entry_id:
+                self._select_entry_by_id(entry_id)
 
-    def _on_context_item_edited(self, item: QTreeWidgetItem, column: int):
+    def _on_context_cell_changed(self, row: int, column: int):
         """Sync edits from the context pane EN column back to the entry."""
-        if column != 2:  # Only EN column
+        if column != 2:
             return
-        entry_id = item.data(0, Qt.ItemDataRole.UserRole)
+        spk_item = self.context_table.item(row, 0)
+        if not spk_item:
+            return
+        entry_id = spk_item.data(Qt.ItemDataRole.UserRole)
         if not entry_id:
             return
-        new_text = item.text(2)
-        # Find the entry and update it
+        new_text = self.context_table.item(row, 2).text()
         for entry in self._all_entries:
             if entry.id == entry_id:
                 entry.translation = new_text
                 entry.status = "translated" if new_text.strip() else "untranslated"
-                # If this entry is currently shown in the main editor, sync it
                 if (self._selected_row >= 0
                         and self._selected_row < len(self._visible_entries)
                         and self._visible_entries[self._selected_row].id == entry_id):
                     self.trans_editor.blockSignals(True)
                     self.trans_editor.setPlainText(new_text)
                     self.trans_editor.blockSignals(False)
-                # Refresh main table row if visible
-                for row, ve in enumerate(self._visible_entries):
+                for vrow, ve in enumerate(self._visible_entries):
                     if ve.id == entry_id:
-                        self._model.refresh_row(row)
+                        self._model.refresh_row(vrow)
                         break
                 break
 
