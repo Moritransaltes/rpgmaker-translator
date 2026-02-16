@@ -1104,7 +1104,7 @@ class MainWindow(QMainWindow):
 
     def _update_speaker_names(self, actors_raw, actor_translations):
         """Replace JP speaker names in entry contexts with EN translations."""
-        # Build JP → EN name map
+        # Build JP → EN name map from actors
         jp_to_en = {}
         for actor in actors_raw:
             aid = actor["id"]
@@ -1112,6 +1112,13 @@ class MainWindow(QMainWindow):
             en_name = actor_translations.get(aid, {}).get("name", "")
             if jp_name and en_name and jp_name != en_name:
                 jp_to_en[jp_name] = en_name
+        # Also include translated NPC speaker names (MZ params[4] / namebox)
+        if self.project:
+            for entry in self.project.entries:
+                if (entry.field == "speaker_name"
+                        and entry.translation
+                        and entry.original != entry.translation):
+                    jp_to_en[entry.original] = entry.translation
         if not jp_to_en:
             return
         for entry in self.project.entries:

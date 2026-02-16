@@ -273,6 +273,17 @@ class SettingsDialog(QDialog):
         )
         opts_form.addRow(self.single_401_check)
 
+        self.face_speaker_check = QCheckBox("Resolve face graphics to actor names")
+        self.face_speaker_check.setToolTip(
+            "In MV games, 101 headers use face graphic filenames (e.g. 'Actor1')\n"
+            "instead of character names. With this enabled, the tool matches\n"
+            "face graphics to actors from Actors.json and uses their real names\n"
+            "as speaker context for the LLM.\n\n"
+            "Disable if actor face assignments don't match the actual speakers\n"
+            "(e.g. reused face sheets for different NPCs)."
+        )
+        opts_form.addRow(self.face_speaker_check)
+
         self.review_file_check = QCheckBox("Export review file after batch translation")
         self.review_file_check.setToolTip(
             "Automatically saves a side-by-side review TXT file\n"
@@ -366,6 +377,8 @@ class SettingsDialog(QDialog):
             self.wordwrap_spin.setValue(0)
         self.single_401_check.setChecked(
             self.parser.single_401_mode if self.parser else False)
+        self.face_speaker_check.setChecked(
+            self.parser.face_speaker_resolve if self.parser else True)
         self.review_file_check.setChecked(self.export_review_file)
         self.dark_mode_check.setChecked(self.dark_mode)
         self.dazed_mode_check.setChecked(getattr(self.client, "dazed_mode", False))
@@ -770,6 +783,7 @@ class SettingsDialog(QDialog):
         if self.parser:
             self.parser.extract_script_strings = self.script_strings_check.isChecked()
             self.parser.single_401_mode = self.single_401_check.isChecked()
+            self.parser.face_speaker_resolve = self.face_speaker_check.isChecked()
         self.accept()
 
     def _on_auto_tune_toggled(self, checked: bool):

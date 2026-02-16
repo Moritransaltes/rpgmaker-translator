@@ -226,6 +226,7 @@ class RPGMakerMVParser:
         self._require_japanese = True  # False = extract all text (for import)
         self.extract_script_strings = False  # Experimental: extract strings from Script (355/655)
         self.single_401_mode = False  # Merge all dialogue lines into one 401 command
+        self.face_speaker_resolve = True  # Resolve face graphics to actor names for speaker context
 
     def _should_extract(self, text: str) -> bool:
         """Check if text should be extracted as a translatable entry."""
@@ -253,6 +254,8 @@ class RPGMakerMVParser:
 
         # Build actor name lookup for \n[N] resolution in namebox
         self._actor_names = self._load_actor_names(data_dir)
+        # Build face graphic → actor lookup for MV speaker resolution
+        self._face_to_actor = self._load_face_to_actor(data_dir)
 
         entries = []
         entries.extend(self._parse_database_files(data_dir))
@@ -365,6 +368,32 @@ class RPGMakerMVParser:
                     if aid and name:
                         names[aid] = name
         return names
+
+    @staticmethod
+    def _load_face_to_actor(data_dir: str) -> dict:
+        """Load {(faceName, faceIndex): actor_id} from Actors.json.
+
+        Used to resolve 101 face graphic references to real actor names
+        in MV games where params[4] (speaker name) doesn't exist.
+        """
+        filepath = os.path.join(data_dir, "Actors.json")
+        if not os.path.exists(filepath):
+            return {}
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {}
+        lookup = {}
+        if isinstance(data, list):
+            for item in data:
+                if item and isinstance(item, dict):
+                    aid = item.get("id", 0)
+                    face = item.get("faceName", "")
+                    idx = item.get("faceIndex", 0)
+                    if aid and face:
+                        lookup[(face, idx)] = aid
+        return lookup
 
     def build_actor_context(self, actors: list, genders: dict) -> str:
         """Build a character reference string with confirmed genders.
@@ -1252,8 +1281,21 @@ class RPGMakerMVParser:
             # MZ: parameters = [faceName, faceIndex, background, positionType, speakerName]
             if code == CODE_SHOW_TEXT_HEADER:
                 face_name = params[0] if len(params) > 0 else ""
+                face_index = params[1] if len(params) > 1 else 0
                 speaker_name = params[4] if len(params) > 4 else ""
-                current_speaker = speaker_name if speaker_name else face_name
+                if speaker_name:
+                    current_speaker = speaker_name
+                elif face_name and self.face_speaker_resolve:
+                    # MV games: resolve face graphic to actor name
+                    actor_id = getattr(self, '_face_to_actor', {}).get(
+                        (face_name, face_index))
+                    if actor_id:
+                        current_speaker = getattr(
+                            self, '_actor_names', {}).get(actor_id, "")
+                    else:
+                        current_speaker = ""  # unknown NPC face
+                else:
+                    current_speaker = ""
                 # Extract MZ speaker name for translation (deduplicated per file)
                 if (speaker_name and self._should_extract(speaker_name)
                         and seen_speakers is not None
