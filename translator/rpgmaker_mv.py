@@ -1321,23 +1321,28 @@ class RPGMakerMVParser:
                             self, '_actor_names', {}).get(
                                 actor_id, namebox)
 
-                if self._should_extract(full_text):
-                    dialog_counter += 1
-                    ctx_parts = []
-                    if current_speaker:
-                        ctx_parts.append(f"[Speaker: {current_speaker}]")
-                    if recent_ctx:
-                        ctx_parts.append("\n---\n".join(recent_ctx))
-                    ctx = "\n".join(ctx_parts)
+                # Always create an entry for dialogue blocks so that the
+                # dialog counter stays aligned across game versions (even
+                # when some versions have blank/empty 401 lines).
+                dialog_counter += 1
+                extractable = self._should_extract(full_text)
+                ctx_parts = []
+                if current_speaker:
+                    ctx_parts.append(f"[Speaker: {current_speaker}]")
+                if recent_ctx:
+                    ctx_parts.append("\n---\n".join(recent_ctx))
+                ctx = "\n".join(ctx_parts)
 
-                    entries.append(TranslationEntry(
-                        id=f"{filename}/{prefix}/dialog_{dialog_counter}",
-                        file=filename,
-                        field="dialog",
-                        original=full_text,
-                        context=ctx,
-                        namebox=namebox,
-                    ))
+                entries.append(TranslationEntry(
+                    id=f"{filename}/{prefix}/dialog_{dialog_counter}",
+                    file=filename,
+                    field="dialog",
+                    original=full_text,
+                    context=ctx,
+                    namebox=namebox,
+                    status="untranslated" if extractable else "skipped",
+                ))
+                if extractable:
                     recent_ctx.append(full_text)
                 continue
 
@@ -1369,16 +1374,18 @@ class RPGMakerMVParser:
                     else:
                         break
                 full_text = "\n".join(lines)
-                if self._should_extract(full_text):
-                    dialog_counter += 1
-                    ctx = "\n---\n".join(recent_ctx) if recent_ctx else ""
-                    entries.append(TranslationEntry(
-                        id=f"{filename}/{prefix}/scroll_{dialog_counter}",
-                        file=filename,
-                        field="scroll_text",
-                        original=full_text,
-                        context=ctx,
-                    ))
+                dialog_counter += 1
+                extractable = self._should_extract(full_text)
+                ctx = "\n---\n".join(recent_ctx) if recent_ctx else ""
+                entries.append(TranslationEntry(
+                    id=f"{filename}/{prefix}/scroll_{dialog_counter}",
+                    file=filename,
+                    field="scroll_text",
+                    original=full_text,
+                    context=ctx,
+                    status="untranslated" if extractable else "skipped",
+                ))
+                if extractable:
                     recent_ctx.append(full_text)
                 continue
 
