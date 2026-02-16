@@ -9,7 +9,7 @@ import re
 from ..utils import event_prefix, extract_event_context
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTableView,
+    QWidget, QVBoxLayout, QHBoxLayout, QTableView, QApplication,
     QLineEdit, QComboBox, QLabel, QMenu, QAbstractItemView, QHeaderView,
     QInputDialog, QMessageBox, QTextEdit, QSplitter, QGroupBox, QCheckBox,
     QPushButton, QTableWidget, QTableWidgetItem, QTabWidget,
@@ -17,7 +17,9 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import (
     pyqtSignal, Qt, QTimer, QAbstractTableModel, QModelIndex,
 )
-from PyQt6.QtGui import QColor, QAction, QTextCursor, QShortcut, QKeySequence
+from PyQt6.QtGui import (
+    QColor, QAction, QTextCursor, QShortcut, QKeySequence, QKeyEvent,
+)
 
 from ..project_model import TranslationEntry
 from .. import CONTROL_CODE_RE, JAPANESE_RE
@@ -388,7 +390,7 @@ class TranslationTable(QWidget):
             QHeaderView.ResizeMode.ResizeToContents)
         self.context_table.verticalHeader().setVisible(False)
         self.context_table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows)
+            QAbstractItemView.SelectionBehavior.SelectItems)
         self.context_table.setEditTriggers(
             QAbstractItemView.EditTrigger.DoubleClicked)
         self.context_table.setAlternatingRowColors(False)
@@ -399,6 +401,7 @@ class TranslationTable(QWidget):
         ch.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.context_table.cellClicked.connect(self._on_context_cell_clicked)
         self.context_table.cellChanged.connect(self._on_context_cell_changed)
+        self.context_table.installEventFilter(self)
         ctx_layout.addWidget(self.context_table)
 
         self.bottom_tabs.addTab(context_widget, "Event Context")
@@ -1144,6 +1147,17 @@ class TranslationTable(QWidget):
         if highlight_row >= 0:
             self.context_table.scrollToItem(
                 self.context_table.item(highlight_row, 0))
+
+    def eventFilter(self, obj, event):
+        """Ctrl+C on context table → copy selected cell text to clipboard."""
+        if obj is self.context_table and isinstance(event, QKeyEvent):
+            if (event.key() == Qt.Key.Key_C
+                    and event.modifiers() == Qt.KeyboardModifier.ControlModifier):
+                item = self.context_table.currentItem()
+                if item:
+                    QApplication.clipboard().setText(item.text())
+                return True
+        return super().eventFilter(obj, event)
 
     def _on_context_cell_clicked(self, row: int, column: int):
         """Navigate the main table to the clicked context entry."""

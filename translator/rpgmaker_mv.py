@@ -1281,7 +1281,9 @@ class RPGMakerMVParser:
                         break
                 full_text = "\n".join(lines)
 
-                # Detect \N<name> namebox prefix on first line
+                # Detect name prefix on first line:
+                #   \N<name> (Lunatlazur namebox plugin)
+                #   \n[N] / \N[N] (bare actor code at line start)
                 namebox = ""
                 nb_match = _NAMEBOX_RE.match(full_text)
                 if nb_match:
@@ -1308,6 +1310,16 @@ class RPGMakerMVParser:
                             field="speaker_name",
                             original=nb_name,
                         ))
+                elif not namebox:
+                    # Bare \n[N] or \N[N] at start of line (no angle brackets)
+                    bare_match = _ACTOR_CODE_RE.match(full_text)
+                    if bare_match:
+                        namebox = bare_match.group(0)  # e.g. \n[1]
+                        full_text = full_text[len(namebox):]
+                        actor_id = int(bare_match.group(1))
+                        current_speaker = getattr(
+                            self, '_actor_names', {}).get(
+                                actor_id, namebox)
 
                 if self._should_extract(full_text):
                     dialog_counter += 1

@@ -15,11 +15,9 @@ log = logging.getLogger(__name__)
 
 
 # Japanese bracket pairs → English equivalents
-# 「」『』 are speech/quote markers — strip them entirely since RPG Maker
-# dialogue is already in a text box (adding "" looks redundant).
 _JP_BRACKETS = {
-    '\u300c': '', '\u300d': '',     # 「 」 → stripped (speech markers)
-    '\u300e': '', '\u300f': '',     # 『 』 → stripped (emphasis quotes)
+    '\u300c': '"', '\u300d': '"',   # 「 」 → " " (speech quotes)
+    '\u300e': '"', '\u300f': '"',   # 『 』 → " " (emphasis quotes)
     '\u3010': '[', '\u3011': ']',   # 【 】 → [ ]
     '\uff08': '(', '\uff09': ')',   # （ ） → ( )
 }
@@ -135,7 +133,8 @@ Context-sensitive translation:
 - Consider the physical setting described in context. Translate verbs appropriately for the situation.
 - 揺れる can mean: swaying, shaking, rocking, bouncing, trembling — pick the one that fits the scene.
 - Avoid overly literal translations. Prioritize natural English that makes sense in the game scene.
-- For adult scenes, use natural and explicit English that matches the original intensity. Do not tone down or soften the language."""
+- For adult scenes, use natural and explicit English that matches the original intensity. Do not tone down or soften the language.
+- Do NOT capitalize common nouns mid-sentence. Words like girl, man, woman, succubus, charm, monster, hero, demon, etc. are lowercase unless at the start of a sentence or part of a proper title/name."""
 
 
 # Sugoi Ultra 14B — JP→EN specialized model (fine-tuned from Qwen2.5-14B).
@@ -160,7 +159,8 @@ Pronoun rules (CRITICAL):
 - Use "I/me" for lines where the speaker talks about themselves.
 - Keep character name translations consistent throughout.
 
-Honorifics — preserve as-is: -san, -kun, -chan, -sama, -sensei, -senpai, -dono. Keep onii-chan, onee-san, etc. in romanized form."""
+Honorifics — preserve as-is: -san, -kun, -chan, -sama, -sensei, -senpai, -dono. Keep onii-chan, onee-san, etc. in romanized form.
+- Do NOT capitalize common nouns mid-sentence. Words like girl, man, woman, succubus, charm, monster, etc. are lowercase unless at the start of a sentence or part of a proper title/name."""
 
 
 DAZEDMTL_FULL_PROMPT = """\
@@ -782,7 +782,9 @@ class AIClient:
             parts.append(f"Context: this is a {hint} from an RPG game.")
         filtered_glossary = self._filter_glossary(text)
         if filtered_glossary:
-            glossary_str = "\n".join(f"  {jp} → {en}" for jp, en in filtered_glossary.items())
+            glossary_str = "\n".join(
+                f"  {jp} → {self._glossary_en_lower(en)}"
+                for jp, en in filtered_glossary.items())
             parts.append(f"REQUIRED glossary — use these EXACT translations:\n{glossary_str}")
         parts.append(f"Translate this:\n{text}")
         user_msg = "\n\n".join(parts)
@@ -824,7 +826,9 @@ class AIClient:
 
         user_msg = ""
         if filtered_glossary:
-            glossary_str = "\n".join(f"  {jp} → {en}" for jp, en in filtered_glossary.items())
+            glossary_str = "\n".join(
+                f"  {jp} → {self._glossary_en_lower(en)}"
+                for jp, en in filtered_glossary.items())
             user_msg += f"REQUIRED glossary — use these EXACT translations:\n{glossary_str}\n\n"
 
         payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
@@ -1018,6 +1022,20 @@ class AIClient:
         search_text = text + "\n" + context
         return {jp: en for jp, en in self.glossary.items() if jp in search_text}
 
+    @staticmethod
+    def _glossary_en_lower(en: str) -> str:
+        """Lowercase a glossary EN term so the LLM doesn't force-capitalize
+        it mid-sentence.  Preserves all-caps (HP, MP) and multi-word title
+        case that looks like a proper noun (Holy Knight, Dark Elf)."""
+        words = en.split()
+        if not words:
+            return en
+        if en.isupper():
+            return en
+        if len(words) > 1 and all(w[0:1].isupper() for w in words):
+            return en
+        return en[0].lower() + en[1:]
+
     def _build_user_message(self, clean_text: str, raw_text: str,
                             code_map: dict, context: str = "",
                             field: str = "",
@@ -1071,7 +1089,9 @@ class AIClient:
         # Glossary placed last (right before text) for maximum attention
         filtered_glossary = self._filter_glossary(raw_text, context)
         if filtered_glossary:
-            glossary_str = "\n".join(f"  {jp} → {en}" for jp, en in filtered_glossary.items())
+            glossary_str = "\n".join(
+                f"  {jp} → {self._glossary_en_lower(en)}"
+                for jp, en in filtered_glossary.items())
             parts.append(
                 f"REQUIRED glossary — use these EXACT translations:\n{glossary_str}"
             )
@@ -1098,6 +1118,13 @@ class AIClient:
         if (result.startswith('"') and result.endswith('"')
                 and len(result) > 1 and '\n' not in result):
             result = result[1:-1]
+        # Strip leading whitespace from continuation lines (JP formatting
+        # artifact — continuation 401 lines often have leading spaces that
+        # look wrong in English prose).
+        if '\n' in result:
+            parts = result.split('\n')
+            result = parts[0] + '\n' + '\n'.join(
+                line.lstrip() for line in parts[1:])
         return result
 
     # Human-readable labels for RPG Maker entry field types
@@ -1410,7 +1437,9 @@ class AIClient:
         batch_search_text = "\n".join(original for _key, original, _ctx, _field in entries)
         filtered_glossary = self._filter_glossary(batch_search_text, first_context)
         if filtered_glossary:
-            glossary_str = "\n".join(f"  {jp} → {en}" for jp, en in filtered_glossary.items())
+            glossary_str = "\n".join(
+                f"  {jp} → {self._glossary_en_lower(en)}"
+                for jp, en in filtered_glossary.items())
             user_msg += f"REQUIRED glossary — use these EXACT translations:\n{glossary_str}\n\n"
 
         payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
