@@ -226,7 +226,7 @@ class RPGMakerMVParser:
         self._require_japanese = True  # False = extract all text (for import)
         self.extract_script_strings = False  # Experimental: extract strings from Script (355/655)
         self.single_401_mode = False  # Merge all dialogue lines into one 401 command
-        self.face_speaker_resolve = True  # Resolve face graphics to actor names for speaker context
+        self.speaker_processing = True  # Strip nameboxes, resolve faces, update speaker names
 
     def _should_extract(self, text: str) -> bool:
         """Check if text should be extracted as a translatable entry."""
@@ -1285,7 +1285,7 @@ class RPGMakerMVParser:
                 speaker_name = params[4] if len(params) > 4 else ""
                 if speaker_name:
                     current_speaker = speaker_name
-                elif face_name and self.face_speaker_resolve:
+                elif face_name and self.speaker_processing:
                     # MV games: resolve face graphic to actor name
                     actor_id = getattr(self, '_face_to_actor', {}).get(
                         (face_name, face_index))
@@ -1329,9 +1329,7 @@ class RPGMakerMVParser:
                 namebox = ""
                 nb_match = _NAMEBOX_RE.match(full_text)
                 if nb_match:
-                    namebox = nb_match.group(0)       # e.g. \N<\n[1]>
                     nb_name = nb_match.group(1)       # e.g. \n[1] or 村人1
-                    full_text = full_text[len(namebox):]
                     # Resolve \n[N] to actor name for speaker context
                     actor_match = _ACTOR_CODE_RE.match(nb_name)
                     if actor_match:
@@ -1340,6 +1338,10 @@ class RPGMakerMVParser:
                             self, '_actor_names', {}).get(actor_id, nb_name)
                     else:
                         current_speaker = nb_name
+                    if self.speaker_processing:
+                        # Strip namebox from text, store for export restoration
+                        namebox = nb_match.group(0)   # e.g. \N<\n[1]>
+                        full_text = full_text[len(namebox):]
                     # Literal JP name → create speaker_name entry for translation
                     if (not actor_match
                             and self._should_extract(nb_name)
@@ -1356,12 +1358,13 @@ class RPGMakerMVParser:
                     # Bare \n[N] or \N[N] at start of line (no angle brackets)
                     bare_match = _ACTOR_CODE_RE.match(full_text)
                     if bare_match:
-                        namebox = bare_match.group(0)  # e.g. \n[1]
-                        full_text = full_text[len(namebox):]
                         actor_id = int(bare_match.group(1))
                         current_speaker = getattr(
                             self, '_actor_names', {}).get(
-                                actor_id, namebox)
+                                actor_id, bare_match.group(0))
+                        if self.speaker_processing:
+                            namebox = bare_match.group(0)  # e.g. \n[1]
+                            full_text = full_text[len(namebox):]
 
                 # Always create an entry for dialogue blocks so that the
                 # dialog counter stays aligned across game versions (even

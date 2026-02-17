@@ -1088,7 +1088,8 @@ class MainWindow(QMainWindow):
         self._rebuild_glossary()
 
         # Update speaker contexts: replace JP actor names with EN translations
-        self._update_speaker_names(actors_raw, actor_translations)
+        if self.parser.speaker_processing:
+            self._update_speaker_names(actors_raw, actor_translations)
 
         # Offer to rename folder to English title (only on first run)
         if translated_title:
@@ -1417,8 +1418,9 @@ class MainWindow(QMainWindow):
                 self.client.actor_genders = self.project.actor_genders
                 self.client.actor_names = {a["id"]: a["name"] for a in actors_raw}
                 # Update speaker contexts with translated actor names
-                actor_tl = self._actor_translations_from_entries(actors_raw)
-                self._update_speaker_names(actors_raw, actor_tl)
+                if self.parser.speaker_processing:
+                    actor_tl = self._actor_translations_from_entries(actors_raw)
+                    self._update_speaker_names(actors_raw, actor_tl)
             self._actors_ready = True
         else:
             self._actors_ready = False
