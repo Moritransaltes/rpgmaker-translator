@@ -645,11 +645,19 @@ class RPGMakerMVParser:
                 except (json.JSONDecodeError, OSError):
                     pass
 
-            # Include word wrap JS plugin file
+            # Include word wrap JS plugin file + font swap
             if inject_wordwrap and js_rel:
                 from .text_processor import WORDWRAP_PLUGIN_JS
                 arc = f"_translation/{js_rel}/plugins/{self.INJECTED_PLUGIN_NAME}.js"
                 zf.writestr(arc, WORDWRAP_PLUGIN_JS.strip() + "\n")
+                # Include Consolas gamefont.css
+                fonts_rel = js_rel.rsplit("/", 1)[0] + "/fonts"  # e.g. www/fonts
+                zf.writestr(f"_translation/{fonts_rel}/gamefont.css",
+                    '@font-face {\n'
+                    '    font-family: GameFont;\n'
+                    '    src: local("Consolas"), local("Courier New");\n'
+                    '}\n'
+                )
 
             total_entries = sum(len(v) for v in by_file.values())
 
@@ -854,11 +862,22 @@ class RPGMakerMVParser:
         if inject_wordwrap and js_rel:
             jr = js_rel.replace("/", "\\")
             tjr = f"_translation\\{jr}"
+            # fonts dir is sibling of js/ (e.g. www/fonts)
+            fr = jr.rsplit("\\", 1)[0] + "\\fonts"
+            tfr = f"_translation\\{fr}"
             lines += [
                 f'if exist "{tjr}\\plugins\\TranslatorWordWrap.js" (',
                 f'    if not exist "{jr}\\plugins\\" mkdir "{jr}\\plugins"',
                 f'    copy /Y "{tjr}\\plugins\\TranslatorWordWrap.js" "{jr}\\plugins\\TranslatorWordWrap.js" >nul',
                 f"    echo   Installed word wrap plugin",
+                ")",
+                # Swap font to Consolas
+                f'if exist "{tfr}\\gamefont.css" (',
+                f'    if exist "{fr}\\gamefont.css" if not exist "{fr}\\gamefont_original.css" (',
+                f'        copy /Y "{fr}\\gamefont.css" "{fr}\\gamefont_original.css" >nul',
+                f"    )",
+                f'    copy /Y "{tfr}\\gamefont.css" "{fr}\\gamefont.css" >nul',
+                f"    echo   Swapped font to Consolas",
                 ")",
             ]
 
@@ -942,11 +961,18 @@ class RPGMakerMVParser:
 
         if inject_wordwrap and js_rel:
             jr = js_rel.replace("/", "\\")
+            fr = jr.rsplit("\\", 1)[0] + "\\fonts"
             lines += [
                 "",
                 f'if exist "{jr}\\plugins\\TranslatorWordWrap.js" (',
                 f'    del "{jr}\\plugins\\TranslatorWordWrap.js"',
                 "    echo   Removed word wrap plugin.",
+                ")",
+                # Restore original font
+                f'if exist "{fr}\\gamefont_original.css" (',
+                f'    if exist "{fr}\\gamefont.css" del "{fr}\\gamefont.css"',
+                f'    ren "{fr}\\gamefont_original.css" "gamefont.css"',
+                "    echo   Restored original font.",
                 ")",
             ]
 
@@ -3029,11 +3055,15 @@ class RPGMakerMVParser:
 
     INJECTED_PLUGIN_NAME = "TranslatorWordWrap"
 
-    def inject_wordwrap_plugin(self, project_dir: str) -> bool:
+    def inject_wordwrap_plugin(self, project_dir: str,
+                               max_chars: int = 0) -> bool:
         """Write TranslatorWordWrap.js and register it in plugins.js.
 
         Called during export when no existing word wrap plugin was detected
         and the user chose to inject one.
+
+        Args:
+            max_chars: Max visible characters per line (0 = auto-detect).
 
         Returns True if injection succeeded, False otherwise.
         """
@@ -3052,6 +3082,28 @@ class RPGMakerMVParser:
         with open(js_path, "w", encoding="utf-8") as f:
             f.write(WORDWRAP_PLUGIN_JS.strip() + "\n")
 
+        # Swap gamefont.css to Consolas for clean Latin text rendering
+        # Look for fonts/ dir relative to js/ (www/fonts/ or fonts/)
+        www_dir = os.path.dirname(js_dir)  # parent of js/
+        fonts_dir = os.path.join(www_dir, "fonts")
+        if not os.path.isdir(fonts_dir):
+            fonts_dir = os.path.join(os.path.dirname(www_dir), "fonts")
+        gamefont_css = os.path.join(fonts_dir, "gamefont.css")
+        if os.path.isfile(gamefont_css):
+            # Backup original
+            backup_css = os.path.join(fonts_dir, "gamefont_original.css")
+            if not os.path.exists(backup_css):
+                import shutil
+                shutil.copy2(gamefont_css, backup_css)
+            with open(gamefont_css, "w", encoding="utf-8") as f:
+                f.write(
+                    '@font-face {\n'
+                    '    font-family: GameFont;\n'
+                    '    src: local("Consolas"), local("Courier New");\n'
+                    '}\n'
+                )
+            log.info("inject_wordwrap_plugin: swapped gamefont.css to Consolas")
+
         # Read from the LIVE plugins.js (not backup) because
         # save_project may have already written translated plugin
         # params to it — reading from backup would overwrite those.
@@ -3061,16 +3113,22 @@ class RPGMakerMVParser:
             log.warning("inject_wordwrap_plugin: failed to parse %s: %s", plugins_path, e)
             return False
 
-        # Don't duplicate if already present
-        if any(p.get("name") == self.INJECTED_PLUGIN_NAME for p in plugins):
-            log.info("inject_wordwrap_plugin: already present in plugins.js")
+        # Update or add plugin entry
+        plugin_params = {"MaxChars": str(max_chars)} if max_chars > 0 else {}
+        existing = next((p for p in plugins
+                         if p.get("name") == self.INJECTED_PLUGIN_NAME), None)
+        if existing:
+            existing["status"] = True
+            existing["parameters"] = plugin_params
+            log.info("inject_wordwrap_plugin: updated in plugins.js")
+            self._write_plugins_js(plugins_path, plugins)
             return True
 
         plugins.append({
             "name": self.INJECTED_PLUGIN_NAME,
             "status": True,
             "description": "Word wrap for translated text (auto-injected)",
-            "parameters": {},
+            "parameters": plugin_params,
         })
         self._write_plugins_js(plugins_path, plugins)
         log.info("inject_wordwrap_plugin: added to %s (%d plugins total)",
@@ -3088,3 +3146,14 @@ class RPGMakerMVParser:
         js_path = os.path.join(js_dir, "plugins", f"{self.INJECTED_PLUGIN_NAME}.js")
         if os.path.isfile(js_path):
             os.remove(js_path)
+
+        # Restore original gamefont.css if we swapped it
+        www_dir = os.path.dirname(js_dir)
+        fonts_dir = os.path.join(www_dir, "fonts")
+        backup_css = os.path.join(fonts_dir, "gamefont_original.css")
+        gamefont_css = os.path.join(fonts_dir, "gamefont.css")
+        if os.path.isfile(backup_css):
+            import shutil
+            shutil.copy2(backup_css, gamefont_css)
+            os.remove(backup_css)
+            log.info("remove_wordwrap_plugin: restored original gamefont.css")

@@ -2282,8 +2282,10 @@ class MainWindow(QMainWindow):
             # Inject word wrap plugin if setting is on
             plugin_msg = ""
             if inject_ww:
-                if self.parser.inject_wordwrap_plugin(self.project.project_path):
-                    plugin_msg = "\nWord wrap plugin (TranslatorWordWrap.js) injected."
+                cpl = self.plugin_analyzer.chars_per_line
+                if self.parser.inject_wordwrap_plugin(
+                        self.project.project_path, max_chars=cpl):
+                    plugin_msg = f"\nWord wrap plugin injected ({cpl} chars/line)."
 
             # Disable splash screen plugin if setting is on
             if self._disable_splash:

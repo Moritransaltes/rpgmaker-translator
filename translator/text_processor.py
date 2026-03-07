@@ -16,21 +16,29 @@ DEFAULT_MAX_LINES = 4
 
 # Minimal word wrap plugin for RPG Maker MV/MZ.
 # Injected into games that lack a word wrap plugin (YEP/VisuMZ).
-# Recognises <WordWrap> tag and wraps text at word boundaries using
-# the game's actual font metrics.
+# Wraps text at word boundaries using character counting.
+# Font is swapped to Consolas via gamefont.css during export,
+# so character counts are exact for this monospace font.
 WORDWRAP_PLUGIN_JS = r"""/*:
- * @plugindesc Word wrap for translated text. Add <WordWrap> at the start of a message to enable.
+ * @plugindesc Word wrap for translated text.
  * @author RPG Maker Translator
  *
+ * @param MaxChars
+ * @desc Maximum visible characters per line (0 = auto-detect).
+ * @default 0
+ *
  * @help
- * This plugin enables automatic word wrapping for translated text.
- * Place <WordWrap> at the beginning of a message to activate it.
- * Text will wrap at word boundaries to fit the message window.
+ * Wraps text at word boundaries when <WordWrap> tag is present.
+ * Place <WordWrap> at the beginning of a message to activate.
+ * Font is swapped to Consolas via gamefont.css for consistent rendering.
  *
  * Auto-injected by RPG Maker Translator during export.
  */
 (function() {
     'use strict';
+
+    var params = PluginManager.parameters('TranslatorWordWrap');
+    var maxCharsParam = Number(params['MaxChars'] || 0);
 
     // --- Detect <WordWrap> tag and pre-wrap text ---
     var _Window_Base_convertEscapeCharacters =
@@ -46,47 +54,56 @@ WORDWRAP_PLUGIN_JS = r"""/*:
         return text;
     };
 
+    // --- Strip escape codes for character counting ---
+    var _twrStripCodes = function(text) {
+        return text.replace(/\x1b[A-Za-z](?:\[\d*\])?/g, '')
+                   .replace(/\x1b[{}$.|!><^]/g, '')
+                   .replace(/<[^>]+>/g, '');
+    };
+
+    // --- Determine max chars: param > auto-detect from pixel width ---
+    Window_Base.prototype._twrMaxChars = function() {
+        if (maxCharsParam > 0) return maxCharsParam;
+        // Auto-detect: measure how many chars fit using actual font
+        var charW = this.textWidth('W');
+        if (charW <= 0) charW = 14;
+        var usable = this.contentsWidth ? this.contentsWidth() :
+                     (this.contents ? this.contents.width : 408);
+        return Math.floor(usable / charW);
+    };
+
     // --- Pre-process: insert \n at word boundaries ---
     Window_Base.prototype._twrApplyWordWrap = function(text) {
-        var maxWidth = this.contentsWidth ? this.contentsWidth() :
-                       (this.contents ? this.contents.width : 408);
+        var maxChars = this._twrMaxChars();
         var lines = text.split('\n');
         var result = [];
         for (var i = 0; i < lines.length; i++) {
-            result.push(this._twrWrapLine(lines[i], maxWidth));
+            result.push(this._twrWrapLine(lines[i], maxChars));
         }
         return result.join('\n');
     };
 
-    Window_Base.prototype._twrWrapLine = function(line, maxWidth) {
+    Window_Base.prototype._twrWrapLine = function(line, maxChars) {
         if (!line) return line;
         var words = line.split(' ');
         var currentLine = '';
-        var currentWidth = 0;
+        var currentLen = 0;
         var resultLines = [];
         for (var j = 0; j < words.length; j++) {
             var word = words[j];
-            var cleanWord = this._twrStripCodes(word);
-            var wordWidth = this.textWidth(cleanWord);
-            var spaceWidth = currentLine ? this.textWidth(' ') : 0;
-            if (currentWidth + spaceWidth + wordWidth > maxWidth && currentLine) {
+            var visLen = _twrStripCodes(word).length;
+            var spaceLen = currentLine ? 1 : 0;
+            if (currentLen + spaceLen + visLen > maxChars && currentLine) {
                 resultLines.push(currentLine);
                 currentLine = word;
-                currentWidth = wordWidth;
+                currentLen = visLen;
             } else {
                 currentLine += (currentLine ? ' ' : '') + word;
-                currentWidth += spaceWidth + wordWidth;
+                currentLen += spaceLen + visLen;
             }
         }
         if (currentLine) resultLines.push(currentLine);
         return resultLines.join('\n');
-    };
-
-    // --- Strip escape codes for width measurement ---
-    Window_Base.prototype._twrStripCodes = function(text) {
-        return text.replace(/\x1b[A-Za-z](?:\[\d*\])?/g, '')
-                   .replace(/\x1b[{}$.|!><^]/g, '')
-                   .replace(/<[^>]+>/g, '');
     };
 })();
 """
