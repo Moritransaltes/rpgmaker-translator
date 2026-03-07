@@ -484,6 +484,7 @@ class TranslationWizard(QDialog):
     def _run_patch_zip(self):
         """Create a translation patch zip."""
         try:
+            import os
             from ..rpgmaker_mv import RPGMakerMVParser
 
             parser = RPGMakerMVParser()
@@ -499,7 +500,12 @@ class TranslationWizard(QDialog):
                 QTimer.singleShot(500, self._run_next_step)
                 return
 
-            zip_path = parser.export_patch_zip(project_path, translated)
+            folder_name = os.path.basename(project_path)
+            zip_path = os.path.join(
+                os.path.dirname(project_path),
+                f"{folder_name} - Translation Patch.zip",
+            )
+            parser.export_patch_zip(project_path, translated, zip_path)
 
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(1)
