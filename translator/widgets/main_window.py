@@ -450,8 +450,10 @@ class MainWindow(QMainWindow):
         translate_menu.addAction(self.find_replace_action)
 
         self.cleanup_action = QAction("Clean Up Translations", self)
+        self.cleanup_action.setShortcut("Ctrl+Shift+U")
         self.cleanup_action.setToolTip(
-            "Strip redundant dialogue quotes and fix contraction spacing (I 've → I've)"
+            "Fix word-per-line, placeholder leaks, spacing, capitalization,\n"
+            "missing spaces after \\n[N], collapsed color codes, quotes, contractions"
         )
         self.cleanup_action.triggered.connect(self._cleanup_translations)
         self.cleanup_action.setEnabled(False)
@@ -2529,6 +2531,30 @@ class MainWindow(QMainWindow):
         # Final pass: restore any control codes the LLM dropped
         codes_fixed = self._restore_missing_codes()
 
+        # Run automated post-processing cleanup (skip if this IS the cleanup pass)
+        from ..post_processor import run_post_processing
+        is_cleanup_pass = getattr(self, "_is_cleanup_retranslation", False)
+        if is_cleanup_pass:
+            self._is_cleanup_retranslation = False
+            pp_result = run_post_processing(self.project.entries)
+            # Don't chain another retranslation — one pass is enough
+        else:
+            pp_result = run_post_processing(self.project.entries)
+
+            # Auto-retranslate flagged entries (one pass only)
+            if pp_result.retranslate_ids:
+                self._autosave()
+                count = len(pp_result.retranslate_ids)
+                self.statusbar.showMessage(
+                    f"Cleanup found {pp_result.total_entries_fixed} issues, "
+                    f"retranslating {count} broken entries...",
+                    5000,
+                )
+                self._is_cleanup_retranslation = True
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(500, lambda: self._start_batch(mode="all"))
+                return
+
         mode = getattr(self, "_current_batch_mode", "all")
         chained = getattr(self, "_batch_all_chained", False)
 
@@ -2576,7 +2602,9 @@ class MainWindow(QMainWindow):
         self.file_tree.refresh_stats(self.project)
         msg = f"Batch complete — {self.project.translated_count}/{self.project.total} translated"
         if codes_fixed:
-            msg += f" ({codes_fixed} control codes restored)"
+            msg += f" ({codes_fixed} codes restored)"
+        if pp_result.total_entries_fixed:
+            msg += f" ({pp_result.total_entries_fixed} cleaned up)"
         # Show cost for cloud providers
         cost_str = self.client.format_session_cost()
         if cost_str:
@@ -3344,10 +3372,16 @@ class MainWindow(QMainWindow):
     _JP_SPEECH_BRACKETS = set('\u300c\u300d\u300e\u300f')  # 「」『』
 
     def _cleanup_translations(self):
-        """Strip redundant dialogue quotes and fix contraction spacing."""
+        """Run all automated post-processing fixes on translations."""
         if not self.project.entries:
             return
 
+        from ..post_processor import run_post_processing
+
+        # Run post-processor (word-per-line, placeholder leaks, spacing, etc.)
+        result = run_post_processing(self.project.entries)
+
+        # Also run quote/contraction fixes
         quotes_fixed = 0
         contractions_fixed = 0
         for entry in self.project.entries:
@@ -3372,10 +3406,13 @@ class MainWindow(QMainWindow):
                 else:
                     contractions_fixed += 1
 
-        if quotes_fixed or contractions_fixed:
+        if result.total_entries_fixed or quotes_fixed or contractions_fixed:
             self.trans_table.refresh()
+            self.file_tree.refresh_stats(self.project)
 
         parts = []
+        if result.total_entries_fixed:
+            parts.append(str(result))
         if quotes_fixed:
             parts.append(f"Stripped quotes from {quotes_fixed} entries")
         if contractions_fixed:

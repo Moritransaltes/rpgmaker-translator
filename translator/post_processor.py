@@ -1,0 +1,360 @@
+"""Post-processing fixes for translated entries.
+
+Runs automatically after batch translate and on-demand via menu.
+All fixes are pure string operations — no LLM needed.
+"""
+
+import re
+from dataclasses import dataclass
+
+from . import CONTROL_CODE_RE, JAPANESE_RE
+
+
+@dataclass
+class PostProcessResult:
+    """Summary of what was fixed."""
+    word_per_line: int = 0
+    code_leaks: int = 0
+    wordwrap_tags: int = 0
+    double_spaces: int = 0
+    trailing_whitespace: int = 0
+    capitalize_terms: int = 0
+    space_after_name_code: int = 0
+    collapsed_color_codes: int = 0
+    total_entries_fixed: int = 0
+    retranslate_ids: list = None  # Entry IDs that need LLM retranslation
+
+    def __post_init__(self):
+        if self.retranslate_ids is None:
+            self.retranslate_ids = []
+
+    def __str__(self) -> str:
+        parts = []
+        if self.word_per_line:
+            parts.append(f"{self.word_per_line} word-per-line")
+        if self.code_leaks:
+            parts.append(f"{self.code_leaks} placeholder leaks")
+        if self.wordwrap_tags:
+            parts.append(f"{self.wordwrap_tags} WordWrap tags")
+        if self.double_spaces:
+            parts.append(f"{self.double_spaces} double spaces")
+        if self.trailing_whitespace:
+            parts.append(f"{self.trailing_whitespace} trailing whitespace")
+        if self.capitalize_terms:
+            parts.append(f"{self.capitalize_terms} capitalization")
+        if self.space_after_name_code:
+            parts.append(f"{self.space_after_name_code} missing space after \\n[N]")
+        if self.collapsed_color_codes:
+            parts.append(f"{self.collapsed_color_codes} collapsed color codes")
+        if self.retranslate_ids:
+            parts.append(f"{len(self.retranslate_ids)} queued for retranslation")
+        if not parts:
+            return "No issues found"
+        return f"{self.total_entries_fixed} entries fixed: " + ", ".join(parts)
+
+
+# ---------- Regexes ----------
+
+# <<CODE1>>, <<CODE2>>, etc. — guillemet placeholder leaks
+_CODE_LEAK_RE = re.compile(r'\u00abCODE\d+\u00bb')
+
+# <<CODE1>>, <<CODE2>> — angle bracket placeholder leaks
+_CODE_LEAK_ANGLE_RE = re.compile(r'<<CODE\d+>>')
+
+# <WordWrap> tag (case insensitive)
+_WORDWRAP_TAG_RE = re.compile(r'<WordWrap>', re.IGNORECASE)
+
+# Multiple consecutive spaces
+_DOUBLE_SPACE_RE = re.compile(r'  +')
+
+# \n[N] NOT followed by a space, newline, punctuation, or end of string
+# This catches "\\n[1]She" but not "\\n[1] She" or "\\n[1]\n"
+_NAME_CODE_NO_SPACE_RE = re.compile(r'(\\n\[\d+\])(?=[A-Za-z])')
+
+# Collapsed color codes: \c[N]\c[0] with nothing meaningful between them
+_COLLAPSED_COLOR_RE = re.compile(r'(\\c\[\d+\])(\\c\[0\])')
+
+# System term fields that should be title-cased
+_SYSTEM_TERM_FIELDS = {
+    "terms/commands", "terms/params", "terms/basic",
+    "elements", "skillTypes", "weaponTypes", "armorTypes", "equipTypes",
+}
+
+
+def _is_system_term(entry) -> bool:
+    """Check if an entry is a System.json term that should be capitalized."""
+    if entry.file != "System.json":
+        return False
+    field = entry.field
+    # Direct match: "terms/commands/5", "elements/2", etc.
+    for prefix in _SYSTEM_TERM_FIELDS:
+        if field.startswith(prefix):
+            return True
+    return False
+
+
+def _is_db_short_field(entry) -> bool:
+    """Check if entry is a short DB field (name, label) vs dialogue."""
+    # Dialogue fields contain "dialog" or are from Map/CommonEvents/Troops
+    field = entry.field
+    if "dialog" in field or "choice" in field:
+        return False
+    # DB files: names, descriptions, terms, etc.
+    db_files = {
+        "Actors.json", "Classes.json", "Skills.json", "Items.json",
+        "Weapons.json", "Armors.json", "Enemies.json", "States.json",
+        "System.json", "Tilesets.json", "MapInfos.json", "Types.json",
+    }
+    return entry.file in db_files
+
+
+def _count_newlines(text: str) -> int:
+    """Count actual newline characters in text."""
+    return text.count('\n')
+
+
+def _fix_word_per_line(entry) -> bool:
+    """Fix word-per-line artifacts by comparing newline counts.
+
+    If translation has significantly more newlines than original,
+    and most 'lines' are single words, rejoin with spaces.
+    """
+    orig = entry.original
+    trans = entry.translation
+    if not trans or '\n' not in trans:
+        return False
+
+    orig_newlines = _count_newlines(orig)
+    trans_newlines = _count_newlines(trans)
+
+    # Only fix if translation has way more newlines than original
+    if trans_newlines <= orig_newlines:
+        return False
+
+    # Check if it looks like word-per-line: most lines are single words
+    lines = trans.split('\n')
+    single_word_lines = sum(1 for line in lines if ' ' not in line.strip() and line.strip())
+    total_nonempty = sum(1 for line in lines if line.strip())
+
+    if total_nonempty == 0:
+        return False
+
+    word_per_line_ratio = single_word_lines / total_nonempty
+
+    # If 70%+ of lines are single words and we have way more \n than original,
+    # this is almost certainly a word-per-line artifact
+    if word_per_line_ratio >= 0.7 and trans_newlines >= orig_newlines + 3:
+        # Rejoin: replace all \n with spaces, then restore original line breaks
+        # For DB/short fields: just join everything with spaces
+        if _is_db_short_field(entry):
+            fixed = ' '.join(line.strip() for line in lines if line.strip())
+            # Collapse multiple spaces
+            fixed = _DOUBLE_SPACE_RE.sub(' ', fixed).strip()
+            entry.translation = fixed
+            return True
+        else:
+            # For dialogue: join everything, then we'll let word wrap handle it
+            fixed = ' '.join(line.strip() for line in lines if line.strip())
+            fixed = _DOUBLE_SPACE_RE.sub(' ', fixed).strip()
+            entry.translation = fixed
+            return True
+
+    return False
+
+
+def _fix_code_leaks(entry, retranslate_ids: list) -> bool:
+    """Strip <<CODE1>>, «CODE1», etc. from translations.
+
+    If stripping leaves orphaned text (e.g. "'s hand" with no subject),
+    marks for retranslation instead of just stripping.
+    """
+    trans = entry.translation
+    if not trans:
+        return False
+    new = _CODE_LEAK_RE.sub('', trans)
+    new = _CODE_LEAK_ANGLE_RE.sub('', new)
+    if new != trans:
+        # Clean up artifacts: double spaces, space before punctuation
+        new = _DOUBLE_SPACE_RE.sub(' ', new)
+        new = re.sub(r'\s+([.,!?;:])', r'\1', new)
+        new = new.strip()
+        # Check if stripping left orphaned text (starts with 's, possessive, etc.)
+        # or if a line starts with lowercase after removal (missing subject)
+        lines = new.split('\n')
+        needs_retranslation = False
+        for line in lines:
+            stripped = line.lstrip()
+            if stripped.startswith("'s ") or stripped.startswith("'s\n"):
+                needs_retranslation = True
+                break
+        if needs_retranslation:
+            # Mark for retranslation — clear translation so LLM redo from scratch
+            entry.translation = ""
+            entry.status = "untranslated"
+            retranslate_ids.append(entry.id)
+        else:
+            entry.translation = new
+        return True
+    return False
+
+
+def _fix_wordwrap_tags(entry) -> bool:
+    """Strip <WordWrap> from stored translations (injected at export only)."""
+    trans = entry.translation
+    if not trans:
+        return False
+    new = _WORDWRAP_TAG_RE.sub('', trans)
+    if new != trans:
+        entry.translation = new.lstrip()  # Remove leading space left by tag removal
+        return True
+    return False
+
+
+def _fix_double_spaces(entry) -> bool:
+    """Collapse multiple spaces to single."""
+    trans = entry.translation
+    if not trans:
+        return False
+    new = _DOUBLE_SPACE_RE.sub(' ', trans)
+    if new != trans:
+        entry.translation = new
+        return True
+    return False
+
+
+def _fix_trailing_whitespace(entry) -> bool:
+    """Strip trailing whitespace and newlines."""
+    trans = entry.translation
+    if not trans:
+        return False
+    new = trans.rstrip()
+    if new != trans:
+        entry.translation = new
+        return True
+    return False
+
+
+def _fix_capitalize_terms(entry) -> bool:
+    """Title-case System.json menu terms and DB name fields."""
+    if not _is_system_term(entry):
+        return False
+    trans = entry.translation
+    if not trans:
+        return False
+
+    # Strip control codes for analysis, but preserve them in output
+    # Split by \n, title-case each part
+    lines = trans.split('\n')
+    new_lines = []
+    changed = False
+    for line in lines:
+        if not line:
+            new_lines.append(line)
+            continue
+        # Title case: capitalize first letter of each word
+        # But preserve control codes
+        words = line.split(' ')
+        new_words = []
+        for word in words:
+            if word and word[0].islower() and not word.startswith('\\'):
+                new_words.append(word[0].upper() + word[1:])
+                changed = True
+            else:
+                new_words.append(word)
+        new_lines.append(' '.join(new_words))
+
+    if changed:
+        entry.translation = '\n'.join(new_lines)
+        return True
+    return False
+
+
+def _fix_space_after_name_code(entry) -> bool:
+    r"""Insert space after \n[N] when followed directly by a letter.
+
+    Fixes: "\\n[1]She went" → "\\n[1] She went"
+    """
+    trans = entry.translation
+    if not trans:
+        return False
+    new = _NAME_CODE_NO_SPACE_RE.sub(r'\1 ', trans)
+    if new != trans:
+        entry.translation = new
+        return True
+    return False
+
+
+def _fix_collapsed_color_codes(entry, retranslate_ids: list) -> bool:
+    r"""Detect \c[N]\c[0] with nothing between them (lost highlight).
+
+    The color-highlighted word was lost during translation. Mark for
+    retranslation so the LLM can properly place the color codes.
+    """
+    trans = entry.translation
+    if not trans:
+        return False
+    if _COLLAPSED_COLOR_RE.search(trans):
+        # Mark for retranslation — the highlighted words are missing
+        entry.translation = ""
+        entry.status = "untranslated"
+        retranslate_ids.append(entry.id)
+        return True
+    return False
+
+
+def run_post_processing(entries: list, verbose: bool = False) -> PostProcessResult:
+    """Run all post-processing fixes on a list of TranslationEntry objects.
+
+    Modifies entries in-place. Returns a summary of fixes applied.
+    Only processes entries with status 'translated' or 'reviewed'.
+    """
+    result = PostProcessResult()
+    fixed_ids = set()
+
+    for entry in entries:
+        if entry.status not in ("translated", "reviewed"):
+            continue
+        if not entry.translation:
+            continue
+
+        entry_fixed = False
+
+        # Tier 1: Zero-risk string cleanups
+        if _fix_code_leaks(entry, result.retranslate_ids):
+            result.code_leaks += 1
+            entry_fixed = True
+
+        if _fix_wordwrap_tags(entry):
+            result.wordwrap_tags += 1
+            entry_fixed = True
+
+        if _fix_word_per_line(entry):
+            result.word_per_line += 1
+            entry_fixed = True
+
+        if _fix_double_spaces(entry):
+            result.double_spaces += 1
+            entry_fixed = True
+
+        if _fix_trailing_whitespace(entry):
+            result.trailing_whitespace += 1
+            entry_fixed = True
+
+        if _fix_capitalize_terms(entry):
+            result.capitalize_terms += 1
+            entry_fixed = True
+
+        # Tier 2: Compare-based fixes
+        if _fix_space_after_name_code(entry):
+            result.space_after_name_code += 1
+            entry_fixed = True
+
+        if _fix_collapsed_color_codes(entry, result.retranslate_ids):
+            result.collapsed_color_codes += 1
+            entry_fixed = True
+
+        if entry_fixed:
+            fixed_ids.add(entry.id)
+
+    result.total_entries_fixed = len(fixed_ids)
+    return result
