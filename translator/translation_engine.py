@@ -94,6 +94,8 @@ class BatchTranslationWorker(QObject):
 
     MAX_RETRIES = 2
 
+    COOLDOWN_ENTRIES = 5  # Single-entry cooldown after batch failure
+
     def __init__(self, client: AIClient, entries: list,
                  mode: str = "translate", batch_size: int = 5,
                  max_history: int = 10):
@@ -102,9 +104,11 @@ class BatchTranslationWorker(QObject):
         self.entries = entries
         self.mode = mode
         self.batch_size = batch_size
+        self._target_batch_size = batch_size  # Remember original for recovery
         self.max_history = max_history
         self._cancelled = False
         self._history: list[tuple[str, str]] = []
+        self._cooldown_remaining = 0  # Entries to process single before retrying batch
 
     def cancel(self):
         self._cancelled = True
@@ -118,9 +122,15 @@ class BatchTranslationWorker(QObject):
             if self._cancelled:
                 break
 
+            # Determine effective batch size (1 during cooldown, normal otherwise)
+            if self._cooldown_remaining > 0:
+                effective_size = 1
+            else:
+                effective_size = self.batch_size
+
             # Build next batch, skipping already-filled entries
             batch = []
-            while i < len(self.entries) and len(batch) < self.batch_size:
+            while i < len(self.entries) and len(batch) < effective_size:
                 entry = self.entries[i]
                 i += 1
                 if self.mode == "translate":
@@ -136,6 +146,12 @@ class BatchTranslationWorker(QObject):
 
             if batch:
                 self._process_batch(batch)
+                if self._cooldown_remaining > 0:
+                    self._cooldown_remaining -= len(batch)
+                    if self._cooldown_remaining <= 0:
+                        self._cooldown_remaining = 0
+                        log.info("Cooldown ended, resuming batch_size=%d",
+                                 self.batch_size)
 
         self.finished.emit()
 
@@ -196,10 +212,13 @@ class BatchTranslationWorker(QObject):
                 log.warning("Batch attempt %d failed: %s", attempt + 1, e)
                 if attempt < self.MAX_RETRIES - 1:
                     continue  # Retry
-                # All retries exhausted — fall back to single-entry
-                log.warning("Batch failed after %d attempts, falling back to single-entry",
-                            self.MAX_RETRIES)
+                # All retries exhausted — fall back to single-entry for this batch
+                # and enter cooldown (process next N entries single before retrying batch)
+                log.warning("Batch failed after %d attempts, falling back to single-entry "
+                            "with %d-entry cooldown",
+                            self.MAX_RETRIES, self.COOLDOWN_ENTRIES)
                 self._fallback_single(batch)
+                self._cooldown_remaining = self.COOLDOWN_ENTRIES
 
     def _fallback_single(self, entries: list):
         """Translate entries one at a time (fallback when batch fails)."""
