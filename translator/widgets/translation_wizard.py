@@ -85,15 +85,20 @@ class TranslationWizard(QDialog):
         self.model_combo.setEditable(True)
         self.model_combo.setMinimumWidth(250)
         # Populate with available models
-        current_model = self.mw.client.model
+        current_model = self.mw.client.model or ""
         try:
             models = self.mw.client.list_models()
         except Exception:
             models = []
         if models:
             self.model_combo.addItems(models)
+        # Ensure current model appears even if list_models() failed
         if current_model:
+            if current_model not in models:
+                self.model_combo.addItem(current_model)
             self.model_combo.setCurrentText(current_model)
+        elif not models:
+            self.model_combo.setPlaceholderText("No models found — is Ollama running?")
         model_row.addStretch()
         layout.addLayout(model_row)
 
@@ -112,20 +117,23 @@ class TranslationWizard(QDialog):
         self.cb_patch = QCheckBox("7. Create translation patch zip")
 
         # Smart defaults
-        has_db_untranslated = any(
-            e.status == "untranslated" and e.file in self.mw._DB_FILES
-            for e in (project.entries if project else [])
-        )
-        has_dialogue_untranslated = any(
-            e.status == "untranslated" and e.file not in self.mw._DB_FILES
-            for e in (project.entries if project else [])
-        )
+        entries = project.entries if project else []
+        db_entries = [e for e in entries if e.file in self.mw._DB_FILES]
+        dialogue_entries = [e for e in entries if e.file not in self.mw._DB_FILES]
+        has_db_untranslated = any(e.status == "untranslated" for e in db_entries)
+        has_dialogue_untranslated = any(e.status == "untranslated" for e in dialogue_entries)
 
         self.cb_db.setChecked(has_db_untranslated)
-        if not has_db_untranslated:
+        if not db_entries:
+            self.cb_db.setText("1. Translate database (no DB entries)")
+            self.cb_db.setEnabled(False)
+        elif not has_db_untranslated:
             self.cb_db.setText("1. Translate database (all done)")
         self.cb_dialogue.setChecked(has_dialogue_untranslated)
-        if not has_dialogue_untranslated:
+        if not dialogue_entries:
+            self.cb_dialogue.setText("2. Translate dialogue (no dialogue entries)")
+            self.cb_dialogue.setEnabled(False)
+        elif not has_dialogue_untranslated:
             self.cb_dialogue.setText("2. Translate dialogue (all done)")
         self.cb_cleanup.setChecked(True)
         self.cb_retranslate.setChecked(True)
