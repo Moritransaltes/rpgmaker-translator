@@ -2262,28 +2262,24 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            # Strip <WordWrap> tags if the game has no word wrap plugin —
+            # they would show as literal text in message windows.
+            if not self.plugin_analyzer.has_wordwrap_plugin:
+                stripped = 0
+                for e in translated:
+                    if e.translation and "<WordWrap>" in e.translation:
+                        e.translation = re.sub(
+                            r'<WordWrap>', '', e.translation, flags=re.IGNORECASE)
+                        stripped += 1
+                if stripped:
+                    self.trans_table.refresh()
+                    log.info("Stripped <WordWrap> tags from %d entries (no plugin)", stripped)
+
             self.parser.save_project(self.project.project_path, self.project.entries)
-            # Inject word wrap plugin if requested or if <WordWrap> tags are present
-            plugin_msg = ""
-            needs_inject = self.plugin_analyzer.should_inject_plugin()
-            if not needs_inject and not self.plugin_analyzer.has_wordwrap_plugin:
-                # Auto-detect: check if any translation has <WordWrap> tags
-                needs_inject = any(
-                    e.translation and "<WordWrap>" in e.translation
-                    for e in translated
-                )
-            if needs_inject:
-                if self.parser.inject_wordwrap_plugin(self.project.project_path):
-                    plugin_msg = "\nWord wrap plugin (TranslatorWordWrap.js) injected."
-                else:
-                    plugin_msg = ("\nWARNING: Could not inject word wrap plugin — "
-                                  "js/plugins.js not found. <WordWrap> tags will "
-                                  "show as raw text. Use Strip Word Wrap Tags to remove.")
             QMessageBox.information(
                 self, "Export Complete",
                 f"Exported {len(translated)} translations to game files.\n"
                 f"Original Japanese files backed up in data_original/."
-                + plugin_msg
             )
         except Exception as e:
             QMessageBox.critical(self, "Export Failed", str(e))
@@ -4188,6 +4184,13 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            # Strip <WordWrap> tags if game has no word wrap plugin
+            if not self.plugin_analyzer.has_wordwrap_plugin:
+                for e in self.project.entries:
+                    if e.translation and "<WordWrap>" in e.translation:
+                        e.translation = re.sub(
+                            r'<WordWrap>', '', e.translation, flags=re.IGNORECASE)
+
             self.parser.export_patch_zip(
                 self.project.project_path, self.project.entries,
                 path, game_title=game_title,
