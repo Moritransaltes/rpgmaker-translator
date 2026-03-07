@@ -82,25 +82,22 @@ class TranslationWizard(QDialog):
         model_row = QHBoxLayout()
         model_row.addWidget(QLabel("Model:"))
         self.model_combo = QComboBox()
-        self.model_combo.setEditable(True)
-        self.model_combo.setMinimumWidth(250)
-        # Populate with available models
-        current_model = self.mw.client.model or ""
-        try:
-            models = self.mw.client.list_models()
-        except Exception:
-            models = []
-        if models:
-            self.model_combo.addItems(models)
-        # Ensure current model appears even if list_models() failed
-        if current_model:
-            if current_model not in models:
-                self.model_combo.addItem(current_model)
-            self.model_combo.setCurrentText(current_model)
-        elif not models:
-            self.model_combo.setPlaceholderText("No models found — is Ollama running?")
+        self.model_combo.setMinimumWidth(280)
+        model_row.addWidget(self.model_combo)
+
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self._refresh_models)
+        model_row.addWidget(refresh_btn)
+
         model_row.addStretch()
         layout.addLayout(model_row)
+
+        self.model_status = QLabel("")
+        self.model_status.setStyleSheet("font-size: 11px;")
+        layout.addWidget(self.model_status)
+
+        # Populate models
+        self._populate_models()
 
         layout.addSpacing(10)
 
@@ -187,6 +184,34 @@ class TranslationWizard(QDialog):
         self.cancel_btn.clicked.connect(self._on_cancel)
 
         layout.addWidget(self.button_box)
+
+    def _populate_models(self):
+        """Fetch and populate the model dropdown."""
+        current_model = self.mw.client.model or ""
+        try:
+            models = self.mw.client.list_models()
+        except Exception:
+            models = []
+
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        if models:
+            self.model_combo.addItems(sorted(models))
+            self.model_status.setText(f"{len(models)} model(s) available")
+            self.model_status.setStyleSheet("font-size: 11px; color: #a6e3a1;")
+        else:
+            self.model_status.setText("No models found — is Ollama running?")
+            self.model_status.setStyleSheet("font-size: 11px; color: #f38ba8;")
+
+        if current_model:
+            if current_model not in models:
+                self.model_combo.addItem(current_model)
+            self.model_combo.setCurrentText(current_model)
+        self.model_combo.blockSignals(False)
+
+    def _refresh_models(self):
+        """Re-fetch models from Ollama."""
+        self._populate_models()
 
     def _update_state(self):
         """Update button states based on current step."""
