@@ -2993,6 +2993,38 @@ class RPGMakerMVParser:
                 if was_string:
                     obj[segment] = json.dumps(val, ensure_ascii=False)
 
+    # ── Splash screen removal ─────────────────────────────────────
+
+    _SPLASH_PLUGIN_NAMES = {"MadeWithMv", "MadeWithMz",
+                            "SplashScreen", "Splash"}
+
+    def disable_splash_plugin(self, project_dir: str) -> bool:
+        """Disable the 'Made with RPG Maker' splash plugin in plugins.js.
+
+        Returns True if a splash plugin was found and disabled.
+        """
+        plugins_path = self._find_plugins_file(project_dir)
+        if not plugins_path:
+            return False
+
+        try:
+            plugins = self._load_plugins_js(plugins_path)
+        except (json.JSONDecodeError, OSError):
+            return False
+
+        disabled = False
+        for p in plugins:
+            if (isinstance(p, dict)
+                    and p.get("name") in self._SPLASH_PLUGIN_NAMES
+                    and p.get("status") is True):
+                p["status"] = False
+                disabled = True
+
+        if disabled:
+            self._write_plugins_js(plugins_path, plugins)
+            log.info("disable_splash_plugin: disabled splash in %s", plugins_path)
+        return disabled
+
     # ── Word wrap plugin injection ─────────────────────────────────
 
     INJECTED_PLUGIN_NAME = "TranslatorWordWrap"

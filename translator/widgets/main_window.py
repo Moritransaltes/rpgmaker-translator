@@ -234,6 +234,7 @@ class MainWindow(QMainWindow):
         self.text_processor = TextProcessor(self.plugin_analyzer)
         self._dark_mode = True
         self._export_review_file = False
+        self._disable_splash = True
         self._actors_ready = False  # True after actor gender dialog has been shown/skipped
         self._batch_start_time = 0
         self._batch_done_count = 0
@@ -2262,9 +2263,10 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            # Strip <WordWrap> tags if the game has no word wrap plugin —
-            # they would show as literal text in message windows.
-            if not self.plugin_analyzer.has_wordwrap_plugin:
+            # Handle word wrap tags based on plugin availability
+            inject_ww = self.plugin_analyzer.should_inject_plugin()
+            if not self.plugin_analyzer.has_wordwrap_plugin and not inject_ww:
+                # Strip <WordWrap> tags — no plugin to process them
                 stripped = 0
                 for e in translated:
                     if e.translation and "<WordWrap>" in e.translation:
@@ -2276,10 +2278,23 @@ class MainWindow(QMainWindow):
                     log.info("Stripped <WordWrap> tags from %d entries (no plugin)", stripped)
 
             self.parser.save_project(self.project.project_path, self.project.entries)
+
+            # Inject word wrap plugin if setting is on
+            plugin_msg = ""
+            if inject_ww:
+                if self.parser.inject_wordwrap_plugin(self.project.project_path):
+                    plugin_msg = "\nWord wrap plugin (TranslatorWordWrap.js) injected."
+
+            # Disable splash screen plugin if setting is on
+            if self._disable_splash:
+                if self.parser.disable_splash_plugin(self.project.project_path):
+                    plugin_msg += "\n'Made with RPG Maker' splash disabled."
+
             QMessageBox.information(
                 self, "Export Complete",
                 f"Exported {len(translated)} translations to game files.\n"
                 f"Original Japanese files backed up in data_original/."
+                + plugin_msg
             )
         except Exception as e:
             QMessageBox.critical(self, "Export Failed", str(e))
@@ -2456,6 +2471,7 @@ class MainWindow(QMainWindow):
             self.client, self, parser=self.parser, dark_mode=self._dark_mode,
             plugin_analyzer=self.plugin_analyzer, engine=self.engine,
             export_review_file=self._export_review_file,
+            disable_splash=self._disable_splash,
         )
         if dlg.exec():
             # Apply dark mode if changed
@@ -2464,6 +2480,7 @@ class MainWindow(QMainWindow):
                 self._apply_dark_mode()
                 self.trans_table.set_dark_mode(self._dark_mode)
             self._export_review_file = dlg.export_review_file
+            self._disable_splash = dlg.disable_splash
             self._save_settings()
             # Preload model into VRAM if model changed (avoids cold-start delay)
             if not self.client.is_cloud:
@@ -2752,6 +2769,10 @@ class MainWindow(QMainWindow):
             self.engine.auto_tune = cfg["auto_tune"]
         if "export_review_file" in cfg:
             self._export_review_file = cfg["export_review_file"]
+        if "disable_splash" in cfg:
+            self._disable_splash = cfg["disable_splash"]
+        if "inject_wordwrap" in cfg:
+            self.plugin_analyzer.inject_wordwrap = cfg["inject_wordwrap"]
 
     def _save_settings(self):
         """Persist current settings to _settings.json."""
@@ -2776,6 +2797,8 @@ class MainWindow(QMainWindow):
             "single_401_mode": self.parser.single_401_mode,
             "auto_tune": self.engine.auto_tune,
             "export_review_file": self._export_review_file,
+            "disable_splash": self._disable_splash,
+            "inject_wordwrap": self.plugin_analyzer.inject_wordwrap,
         }
         try:
             with open(self._SETTINGS_FILE, "w", encoding="utf-8") as f:
@@ -4184,8 +4207,9 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            # Strip <WordWrap> tags if game has no word wrap plugin
-            if not self.plugin_analyzer.has_wordwrap_plugin:
+            # Strip <WordWrap> tags if no plugin to handle them
+            inject_ww = self.plugin_analyzer.should_inject_plugin()
+            if not self.plugin_analyzer.has_wordwrap_plugin and not inject_ww:
                 for e in self.project.entries:
                     if e.translation and "<WordWrap>" in e.translation:
                         e.translation = re.sub(

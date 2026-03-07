@@ -44,12 +44,13 @@ class SettingsDialog(QDialog):
 
     def __init__(self, client: AIClient, parent=None, parser: RPGMakerMVParser = None,
                  dark_mode: bool = True, plugin_analyzer=None, engine=None,
-                 export_review_file: bool = False):
+                 export_review_file: bool = False, disable_splash: bool = True):
         super().__init__(parent)
         self.client = client
         self.parser = parser
         self.dark_mode = dark_mode
         self.export_review_file = export_review_file
+        self.disable_splash = disable_splash
         self.plugin_analyzer = plugin_analyzer
         self.engine = engine
         self.setWindowTitle("Settings")
@@ -294,6 +295,23 @@ class SettingsDialog(QDialog):
         )
         opts_form.addRow(self.review_file_check)
 
+        self.inject_wordwrap_check = QCheckBox("Inject word wrap plugin on export")
+        self.inject_wordwrap_check.setToolTip(
+            "If the game has no word wrap plugin, inject TranslatorWordWrap.js\n"
+            "on export. This lets the game engine wrap text using actual font\n"
+            "metrics instead of guessing characters per line.\n\n"
+            "When enabled, Apply Word Wrap adds <WordWrap> tags.\n"
+            "When disabled, Apply Word Wrap uses manual line breaks."
+        )
+        opts_form.addRow(self.inject_wordwrap_check)
+
+        self.disable_splash_check = QCheckBox("Disable 'Made with RPG Maker' splash on export")
+        self.disable_splash_check.setToolTip(
+            "Automatically disables the MadeWithMv/MadeWithMz splash\n"
+            "screen plugin when exporting translations to the game."
+        )
+        opts_form.addRow(self.disable_splash_check)
+
         layout.addWidget(opts_group)
 
         # Appearance
@@ -380,6 +398,9 @@ class SettingsDialog(QDialog):
         self.speaker_processing_check.setChecked(
             self.parser.speaker_processing if self.parser else True)
         self.review_file_check.setChecked(self.export_review_file)
+        self.inject_wordwrap_check.setChecked(
+            self.plugin_analyzer.inject_wordwrap if self.plugin_analyzer else False)
+        self.disable_splash_check.setChecked(self.disable_splash)
         self.dark_mode_check.setChecked(self.dark_mode)
         self.dazed_mode_check.setChecked(getattr(self.client, "dazed_mode", False))
         self.script_strings_check.setChecked(
@@ -777,6 +798,9 @@ class SettingsDialog(QDialog):
                 self.plugin_analyzer.chars_per_line = manual
         self.dark_mode = self.dark_mode_check.isChecked()
         self.export_review_file = self.review_file_check.isChecked()
+        if self.plugin_analyzer:
+            self.plugin_analyzer.inject_wordwrap = self.inject_wordwrap_check.isChecked()
+        self.disable_splash = self.disable_splash_check.isChecked()
         self.client.dazed_mode = self.dazed_mode_check.isChecked()
         if self.parser:
             self.parser.extract_script_strings = self.script_strings_check.isChecked()
