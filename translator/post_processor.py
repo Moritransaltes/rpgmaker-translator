@@ -16,6 +16,7 @@ class PostProcessResult:
     word_per_line: int = 0
     code_leaks: int = 0
     wordwrap_tags: int = 0
+    hallucinated_br: int = 0
     double_spaces: int = 0
     trailing_whitespace: int = 0
     capitalize_terms: int = 0
@@ -37,6 +38,8 @@ class PostProcessResult:
             parts.append(f"{self.code_leaks} placeholder leaks")
         if self.wordwrap_tags:
             parts.append(f"{self.wordwrap_tags} WordWrap tags")
+        if self.hallucinated_br:
+            parts.append(f"{self.hallucinated_br} hallucinated <br> tags")
         if self.double_spaces:
             parts.append(f"{self.double_spaces} double spaces")
         if self.trailing_whitespace:
@@ -66,6 +69,9 @@ _CODE_LEAK_ANGLE_RE = re.compile(r'<<CODE\d+>>')
 
 # <WordWrap> tag (case insensitive)
 _WORDWRAP_TAG_RE = re.compile(r'<WordWrap>', re.IGNORECASE)
+
+# <br> tag (case insensitive) — hallucinated by LLM as line break
+_BR_TAG_RE = re.compile(r'<br\s*/?>', re.IGNORECASE)
 
 # Multiple consecutive spaces
 _DOUBLE_SPACE_RE = re.compile(r'  +')
@@ -213,6 +219,29 @@ def _fix_wordwrap_tags(entry) -> bool:
     return False
 
 
+def _fix_hallucinated_br(entry) -> bool:
+    """Replace <br> with newline when original doesn't contain <br>.
+
+    LLMs sometimes hallucinate <br> tags as line breaks. If the original
+    text doesn't have them, they'll show as literal text in-game.
+    """
+    trans = entry.translation
+    if not trans or '<br' not in trans.lower():
+        return False
+    # Only strip if original doesn't have <br>
+    if '<br' in entry.original.lower():
+        return False
+    new = _BR_TAG_RE.sub('\n', trans)
+    if new != trans:
+        # Clean up: collapse double newlines from replacement
+        new = re.sub(r'\n{3,}', '\n\n', new)
+        # Clean up spaces around the replaced newline
+        new = re.sub(r' *\n *', '\n', new)
+        entry.translation = new
+        return True
+    return False
+
+
 def _fix_double_spaces(entry) -> bool:
     """Collapse multiple spaces to single."""
     trans = entry.translation
@@ -346,6 +375,10 @@ def run_post_processing(entries: list, verbose: bool = False) -> PostProcessResu
 
         if _fix_wordwrap_tags(entry):
             result.wordwrap_tags += 1
+            entry_fixed = True
+
+        if _fix_hallucinated_br(entry):
+            result.hallucinated_br += 1
             entry_fixed = True
 
         if _fix_word_per_line(entry):
