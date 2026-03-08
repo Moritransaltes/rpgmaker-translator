@@ -14,8 +14,8 @@ import re
 DEFAULT_CHARS_PER_LINE = 55
 DEFAULT_MAX_LINES = 4
 # When a face/portrait graphic is displayed, the text area shrinks.
-# Standard RPG Maker face is 144px wide, leaving ~35 chars for text.
-FACE_CHARS_PER_LINE = 35
+# Standard RPG Maker face is 144px wide, leaving ~30 chars for text.
+FACE_CHARS_PER_LINE = 30
 
 # Minimal word wrap plugin for RPG Maker MV/MZ.
 # Injected into games that lack a word wrap plugin (YEP/VisuMZ).
