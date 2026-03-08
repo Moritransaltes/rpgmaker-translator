@@ -1093,6 +1093,26 @@ class MainWindow(QMainWindow):
                 if jp_name in self._vocab_genders:
                     actor["auto_gender"] = self._vocab_genders[jp_name]
 
+        # Ask protagonist gender upfront (Actor 1 is protagonist in ~all RPG Maker games)
+        if actors_raw:
+            actor1 = next((a for a in actors_raw if a["id"] == 1), None)
+            if actor1 and actor1.get("auto_gender", "") not in ("male", "female"):
+                tl1 = actor_translations.get(1, {})
+                name = tl1.get("name") or actor1.get("name", "Actor 1")
+                box = QMessageBox(self)
+                box.setWindowTitle("Protagonist Gender")
+                box.setText(
+                    f"Is the protagonist \"{name}\" male or female?\n\n"
+                    "This ensures correct pronouns (he/she) throughout the game."
+                )
+                male_btn = box.addButton("Male", QMessageBox.ButtonRole.YesRole)
+                female_btn = box.addButton("Female", QMessageBox.ButtonRole.NoRole)
+                box.exec()
+                if box.clickedButton() == male_btn:
+                    actor1["auto_gender"] = "male"
+                else:
+                    actor1["auto_gender"] = "female"
+
         # Show gender assignment dialog with translated names
         if actors_raw:
             dlg = ActorGenderDialog(actors_raw, self, translations=actor_translations)
