@@ -6,7 +6,7 @@
 
 <p align="center">
 Translate RPG Maker MV/MZ games from Japanese to English.<br>
-<b>Local LLM</b> (Ollama + Sugoi — free, private, no content filters) or <b>Cloud API</b> (OpenAI, Gemini, DeepSeek, Anthropic — experimental, pay-per-token).<br>
+<b>Local LLM</b> (Ollama + Qwen 3.5 — free, private, no content filters) or <b>Cloud API</b> (OpenAI, Gemini, DeepSeek, Anthropic — experimental, pay-per-token).<br>
 Auto-tuned to maximize GPU speed. Pronoun-aware. Glossary-driven. Batch translation with resume.<br>
 Designed by a human, coded with <a href="https://claude.ai/code">Claude Code</a>.
 Cloud API engine ported from <a href="https://github.com/dazedanon/DazedMTLTool">DazedMTLTool</a> (MIT).
@@ -25,7 +25,7 @@ Open a game folder. Hit Batch Translate. Get a playable English translation. Ope
 
 | | |
 |---|---|
-| **Local LLM (free)** | Ollama + [Sugoi Ultra 14B](https://huggingface.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF) on your GPU — auto-tuned for your hardware, no API keys, no content filters, no account bans. Your data never leaves your PC |
+| **Local LLM (free)** | Ollama + [Qwen 3.5:9b](https://ollama.com/library/qwen3.5) on your GPU — auto-tuned for your hardware, no API keys, no content filters, no account bans. Your data never leaves your PC |
 | **Cloud API (experimental)** | OpenAI, Gemini, DeepSeek, Anthropic — DazedMTL-compatible batch mode with live cost tracking |
 | **Pronoun system** | Actor genders, speaker detection, `\N[n]` character mapping — the LLM knows who's "he" and who's "she" |
 | **Glossary-driven** | Two-layer glossary auto-built from translated DB names — "Potion" stays "Potion" everywhere |
@@ -65,6 +65,8 @@ Open a game folder. Hit Batch Translate. Get a playable English translation. Ope
 - **Open in RPG Maker** — Creates a workspace with directory junctions so you can QA and playtest translations in RPG Maker's visual editor. Auto-detects MV vs MZ.
 - **Cloud cost tracking** — Real-time token count and USD cost during batch translation.
 - **Translation variants** — Generate 3 different translations per entry and pick the best one.
+- **Word wrap plugin** — Auto-injected JS plugin wraps dialogue at render time using pixel measurements. Also hooks Window_Help for skill/item descriptions. No manual line break guessing.
+- **Post-processor** — Automated fixes after batch translate: placeholder leaks, collapsed color codes, missing spaces, spurious newlines, skill message spacing, and more.
 - **Grammar polish** — English-to-English LLM pass to fix awkward phrasing without retranslating from Japanese.
 - **Prompt presets** — Default, Sugoi (DazedMTL Full), DazedMTL Simple, or Custom. Reset Default and Clear buttons.
 
@@ -72,12 +74,12 @@ Open a game folder. Hit Batch Translate. Get a playable English translation. Ope
 
 ## Quick Start
 
-### 1. Install Ollama + Sugoi
+### 1. Install Ollama + Qwen 3.5
 
 ```bash
 # Install Ollama: https://ollama.com/download
-# Then grab Sugoi (best JP→EN model):
-ollama run hf.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF
+# Then grab Qwen 3.5 (best JP→EN model):
+ollama pull qwen3.5:9b
 ```
 
 ### 2. Install & Run
@@ -100,9 +102,9 @@ python main.py
 
 ## Recommended Models
 
-### Qwen3.5:9b — JP→EN (Recommended)
+### Qwen 3.5:9b — JP→EN (Recommended)
 
-Multimodal model with 262K native context window. Excellent JP→EN translation quality, handles honorifics, adult content, and RPG Maker control codes. Also used for image OCR. Only ~6.6GB VRAM (Q4_K_M).
+Best overall JP→EN model. 262K native context window, multimodal (also used for image OCR), handles honorifics, adult content, and RPG Maker control codes. Only ~6.6GB VRAM at Q4_K_M.
 
 | GPU VRAM | Quantization | Command |
 |---|---|---|
@@ -111,7 +113,7 @@ Multimodal model with 262K native context window. Excellent JP→EN translation 
 
 ### Sugoi Ultra 14B — JP→EN (Alternative)
 
-Fine-tuned on visual novel, RPG, and manga JP→EN data. Specialized for the domain but has a smaller context window than Qwen3.5.
+Fine-tuned on visual novel, RPG, and manga JP→EN data. Specialized for the domain but has a smaller 4K context window. Use Qwen 3.5 unless you specifically need Sugoi's fine-tuned style.
 
 | GPU VRAM | Quantization | Command |
 |---|---|---|
@@ -212,7 +214,7 @@ Project entries override general entries for the same JP term.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Provider | Ollama (Local) | Translation engine — Ollama, OpenAI, Gemini, DeepSeek, Anthropic, Custom |
-| Model | (auto-detected) | LLM model. Sugoi recommended for JP→EN |
+| Model | (auto-detected) | LLM model. Qwen 3.5:9b recommended for JP→EN |
 | Prompt Preset | Default / Sugoi | Preset prompt or Custom. Reset Default / Clear buttons |
 | DazedMTL Mode | Off | One-click: batch 30, 4 workers, DazedMTL prompt |
 | Target Language | English | 24 languages with quality ratings |
@@ -250,7 +252,7 @@ Project entries override general entries for the same JP term.
 | Problem | Fix |
 |---|---|
 | "Cannot connect to Ollama" | Run `ollama serve` in a terminal first |
-| Translations are slow | Enable DazedMTL Mode or set batch size 20-30. Auto-tune finds your GPU's sweet spot. Single-entry mode is 2-10s; batch mode hits ~1s/entry on a 4070 Ti |
+| Translations are slow | Use Qwen 3.5:9b with batch size 5+ or enable DazedMTL Mode (batch 30, 4 workers). Auto-tune finds your GPU's sweet spot |
 | Wrong pronouns | Assign correct genders in the actor dialog, or use Batch by Actor mode |
 | Missing control codes | Right-click > Restore Missing Codes, or they auto-restore at checkpoints |
 | Cloud API errors | Check your API key in Settings. Test Connection button verifies connectivity |
