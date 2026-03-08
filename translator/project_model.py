@@ -20,6 +20,7 @@ class TranslationEntry:
     status: str = "untranslated"  # "untranslated" | "translated" | "reviewed" | "skipped"
     context: str = ""      # Surrounding text for LLM context
     namebox: str = ""      # \N<name> prefix stripped during parse, restored on export
+    has_face: bool = False # True when 101 header has a face graphic (narrower text area)
 
 
 @dataclass

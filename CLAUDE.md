@@ -94,6 +94,7 @@ e:\Hgames\Translator RPG Games\
 - **Event command codes**: 101=ShowText header (speaker info), 401=ShowText line, 102=Choices, 105/405=ScrollText
 - **Dialogue grouping**: Consecutive 401 commands merged into single blocks for coherent translation
 - **Speaker detection**: Reads 101 headers for face name / speaker name (MZ param[4]); also detects `\N<name>` namebox prefixes from `Lunatlazur_ActorNameWindow` plugin
+- **Face graphic detection**: Sets `entry.has_face` from 101 header's `parameters[0]` — used by TextProcessor for narrower word wrap when a portrait is displayed
 - **Inline namebox stripping**: `\N<name>` prefixes stripped from dialogue text at parse time, stored in `entry.namebox`, restored on export. Actor ID references (`\N<\n[1]>`) resolved to actor names for speaker context
 - **Context building**: Configurable sliding window (`context_size`, default 3) of recent dialogue entries passed as context
 - **Game title**: `get_game_title()` reads raw title from System.json regardless of language
@@ -102,7 +103,7 @@ e:\Hgames\Translator RPG Games\
 - **Plugin export**: Writes translated plugin parameters back to `plugins.js`, with backup as `plugins_original.js`
 
 #### `project_model.py` — Data Model
-- `TranslationEntry`: id, file, field, original, translation, status, context, namebox
+- `TranslationEntry`: id, file, field, original, translation, status, context, namebox, has_face
 - `TranslationProject`: entry list + glossary + general_glossary + actor_genders, save/load JSON state for resume
 - Status values: `untranslated`, `translated`, `reviewed`, `skipped`
 - `namebox` field stores stripped `\N<name>` prefix for export restoration (default empty string, backward-compatible)
@@ -120,6 +121,7 @@ e:\Hgames\Translator RPG Games\
 - `PluginAnalyzer`: Parses `js/plugins.js` for YEP_MessageCore, VisuMZ_MessageCore, etc.
 - Detects message window width, font size, word wrap plugin tags (`<WordWrap>`)
 - `TextProcessor`: Applies word wrapping respecting control code visual width
+- **Face-aware word wrap**: When `entry.has_face` is True, wraps at `FACE_CHARS_PER_LINE` (35) instead of the full window width — face/portrait graphic takes ~144px of the message window
 
 #### `default_glossary.py` — Preset Glossary
 - ~100 common JP→EN translations for RPG terms, body parts, expressions

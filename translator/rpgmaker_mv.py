@@ -1121,6 +1121,37 @@ class RPGMakerMVParser:
                             field=fld,
                             original=text,
                         ))
+                # Extract translatable Japanese text from note tags.
+                # Plugin tags like <custom_mp_text:精力,精力> contain
+                # display text that shows in-game.
+                note = item.get("note", "")
+                if note:
+                    entries.extend(self._extract_note_tags(
+                        filename, item_id, note))
+        return entries
+
+    @staticmethod
+    def _extract_note_tags(filename: str, item_id: int,
+                           note: str) -> list:
+        """Extract translatable values from plugin note tags.
+
+        Matches ``<TagName:val1,val2,...>`` where any value contains
+        Japanese.  Each unique JP value becomes a TranslationEntry.
+        """
+        entries = []
+        for m in re.finditer(r'<([A-Za-z_]\w*):([^>]+)>', note):
+            tag_name = m.group(1)
+            values = m.group(2).split(',')
+            for vi, val in enumerate(values):
+                val = val.strip()
+                if val and _has_japanese(val):
+                    entry_id = f"{filename}/{item_id}/note/{tag_name}/{vi}"
+                    entries.append(TranslationEntry(
+                        id=entry_id,
+                        file=filename,
+                        field=f"note_tag:{tag_name}",
+                        original=val,
+                    ))
         return entries
 
     # ── Private: System.json ───────────────────────────────────────────
@@ -1359,6 +1390,7 @@ class RPGMakerMVParser:
         i = 0
         dialog_counter = 0
         current_speaker = ""  # Track who is speaking
+        current_has_face = False  # Track if current 101 header has a face graphic
 
         while i < len(cmd_list):
             cmd = cmd_list[i]
@@ -1375,6 +1407,7 @@ class RPGMakerMVParser:
             if code == CODE_SHOW_TEXT_HEADER:
                 face_name = params[0] if len(params) > 0 else ""
                 face_index = params[1] if len(params) > 1 else 0
+                current_has_face = bool(face_name)
                 speaker_name = params[4] if len(params) > 4 else ""
                 if speaker_name:
                     current_speaker = speaker_name
@@ -1479,6 +1512,7 @@ class RPGMakerMVParser:
                     context=ctx,
                     namebox=namebox,
                     status="untranslated" if extractable else "skipped",
+                    has_face=current_has_face,
                 ))
                 if extractable:
                     recent_ctx.append(full_text)
@@ -2247,6 +2281,30 @@ class RPGMakerMVParser:
                     if page and isinstance(page, dict):
                         process_commands(page.get("list", []))
 
+    @staticmethod
+    def _apply_note_tag(item: dict, tag_name: str, value_idx: int,
+                        original: str, translation: str):
+        """Replace a Japanese value inside a plugin note tag.
+
+        Finds ``<tag_name:v0,v1,...>`` in the item's note field and
+        replaces the value at *value_idx* (matching *original*) with
+        *translation*.
+        """
+        note = item.get("note", "")
+        if not note:
+            return
+
+        def _replace(m):
+            if m.group(1) != tag_name:
+                return m.group(0)
+            vals = m.group(2).split(',')
+            if value_idx < len(vals) and vals[value_idx].strip() == original:
+                vals[value_idx] = translation
+            return f"<{tag_name}:{','.join(vals)}>"
+
+        item["note"] = re.sub(
+            r'<([A-Za-z_]\w*):([^>]+)>', _replace, note)
+
     def _apply_translation(self, data, entry: TranslationEntry):
         """Apply a single translation back into the loaded JSON data."""
         parts = entry.id.split("/")
@@ -2266,7 +2324,13 @@ class RPGMakerMVParser:
             if isinstance(data, list):
                 for item in data:
                     if item and isinstance(item, dict) and item.get("id") == item_id:
-                        if field_name in item:
+                        if field_name == "note" and len(parts) >= 5:
+                            # Note tag: "File/id/note/TagName/valueIndex"
+                            self._apply_note_tag(item, parts[3],
+                                                 int(parts[4]),
+                                                 entry.original,
+                                                 entry.translation)
+                        elif field_name in item:
                             item[field_name] = entry.translation
                         break
 

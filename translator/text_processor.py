@@ -13,6 +13,9 @@ import re
 # Roughly 4 lines of ~55 chars at default settings
 DEFAULT_CHARS_PER_LINE = 55
 DEFAULT_MAX_LINES = 4
+# When a face/portrait graphic is displayed, the text area shrinks.
+# Standard RPG Maker face is 144px wide, leaving ~35 chars for text.
+FACE_CHARS_PER_LINE = 35
 
 # Minimal word wrap plugin for RPG Maker MV/MZ.
 # Injected into games that lack a word wrap plugin (YEP/VisuMZ).
@@ -290,7 +293,8 @@ class TextProcessor:
         self.overflow_entries: list[tuple[str, str]] = []  # (id, file) of overflows
 
     def process_entry(self, original: str, translation: str,
-                      *, use_tag: bool = True) -> str:
+                      *, use_tag: bool = True,
+                      has_face: bool = False) -> str:
         """Process a single translated text — apply word wrapping.
 
         Args:
@@ -298,6 +302,7 @@ class TextProcessor:
             translation: The English translation to wrap.
             use_tag: If True and a wordwrap plugin exists, add <WordWrap> tag.
                      If False, always use manual line breaks (for DB fields).
+            has_face: If True, use narrower width (face graphic takes space).
 
         Returns:
             The processed translation with proper line breaks.
@@ -314,7 +319,8 @@ class TextProcessor:
             return self._apply_plugin_wordwrap(translation, orig_line_count)
 
         # Otherwise — manually redistribute text across lines
-        return self._apply_manual_wordwrap(translation, orig_line_count)
+        return self._apply_manual_wordwrap(translation, orig_line_count,
+                                           has_face=has_face)
 
     def _apply_plugin_wordwrap(self, text: str, orig_line_count: int) -> str:
         """For games with word wrap plugins: add tag, keep within line count.
@@ -351,7 +357,8 @@ class TextProcessor:
 
         return "\n".join(lines)
 
-    def _apply_manual_wordwrap(self, text: str, orig_line_count: int) -> str:
+    def _apply_manual_wordwrap(self, text: str, orig_line_count: int,
+                               *, has_face: bool = False) -> str:
         """Redistribute text across lines to fit message window width.
 
         Joins all text, re-wraps to chars_per_line, and expands to as
@@ -362,7 +369,8 @@ class TextProcessor:
         Sets self._last_overflow if the wrapped text exceeds a single
         message box (analyzer.max_lines).
         """
-        max_chars = self.analyzer.chars_per_line
+        max_chars = (FACE_CHARS_PER_LINE if has_face
+                     else self.analyzer.chars_per_line)
         self._last_overflow = False
 
         # Strip any leftover <WordWrap> tags
@@ -448,8 +456,10 @@ class TextProcessor:
             use_tag = entry.field in self._WORDWRAP_FIELDS
             self._last_overflow = False
             orig_line_count = len(entry.original.split("\n"))
+            has_face = getattr(entry, 'has_face', False)
             processed = self.process_entry(
-                entry.original, entry.translation, use_tag=use_tag)
+                entry.original, entry.translation, use_tag=use_tag,
+                has_face=has_face)
             if processed != entry.translation:
                 entry.translation = processed
                 count += 1

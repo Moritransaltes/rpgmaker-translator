@@ -21,6 +21,7 @@ class PostProcessResult:
     capitalize_terms: int = 0
     space_after_name_code: int = 0
     collapsed_color_codes: int = 0
+    skill_message_space: int = 0
     total_entries_fixed: int = 0
     retranslate_ids: list = None  # Entry IDs that need LLM retranslation
 
@@ -46,6 +47,8 @@ class PostProcessResult:
             parts.append(f"{self.space_after_name_code} missing space after \\n[N]")
         if self.collapsed_color_codes:
             parts.append(f"{self.collapsed_color_codes} collapsed color codes")
+        if self.skill_message_space:
+            parts.append(f"{self.skill_message_space} skill message leading spaces")
         if self.retranslate_ids:
             parts.append(f"{len(self.retranslate_ids)} queued for retranslation")
         if not parts:
@@ -284,6 +287,23 @@ def _fix_space_after_name_code(entry) -> bool:
     return False
 
 
+def _fix_skill_message_space(entry) -> bool:
+    """Add leading space to skill message1/message2 fields.
+
+    RPG Maker concatenates ActorName + message directly, so
+    "released Curse!" becomes "Novalreleased Curse!" without a space.
+    """
+    if entry.file != "Skills.json":
+        return False
+    if entry.field not in ("message1", "message2"):
+        return False
+    trans = entry.translation
+    if not trans or trans.startswith(' '):
+        return False
+    entry.translation = ' ' + trans
+    return True
+
+
 def _fix_collapsed_color_codes(entry, retranslate_ids: list) -> bool:
     r"""Detect \c[N]\c[0] with nothing between them (lost highlight).
 
@@ -334,6 +354,10 @@ def run_post_processing(entries: list, verbose: bool = False) -> PostProcessResu
 
         if _fix_double_spaces(entry):
             result.double_spaces += 1
+            entry_fixed = True
+
+        if _fix_skill_message_space(entry):
+            result.skill_message_space += 1
             entry_fixed = True
 
         if _fix_trailing_whitespace(entry):
