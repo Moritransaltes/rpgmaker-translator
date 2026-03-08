@@ -2398,26 +2398,16 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            # Handle word wrap tags based on plugin availability
-            inject_ww = self.plugin_analyzer.should_inject_plugin()
-            if not self.plugin_analyzer.has_wordwrap_plugin and not inject_ww:
-                # Strip <WordWrap> tags — no plugin to process them
-                stripped = 0
-                for e in translated:
-                    if e.translation and "<WordWrap>" in e.translation:
-                        e.translation = re.sub(
-                            r'<WordWrap>', '', e.translation, flags=re.IGNORECASE)
-                        stripped += 1
-                if stripped:
-                    self.trans_table.refresh()
-                    self.statusbar.showMessage(
-                        f"Stripped <WordWrap> tags from {stripped} entries (no plugin)", 3000)
-
             self.parser.save_project(self.project.project_path, self.project.entries)
 
-            # Inject word wrap plugin if setting is on
+            # Auto-inject word wrap plugin when translations use <WordWrap> tags
+            # and no existing plugin handles them
             plugin_msg = ""
-            if inject_ww:
+            has_ww_tags = any(
+                e.translation and "<WordWrap>" in e.translation
+                for e in translated
+            )
+            if has_ww_tags and not self.plugin_analyzer.has_wordwrap_plugin:
                 cpl = self.plugin_analyzer.chars_per_line
                 if self.parser.inject_wordwrap_plugin(
                         self.project.project_path, max_chars=cpl):
