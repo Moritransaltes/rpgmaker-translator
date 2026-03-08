@@ -905,6 +905,60 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("RPG Maker Translator")
         self.statusbar.showMessage("Project closed.", 5000)
 
+    def _inject_protag_profile(self, project_path: str, gender: str):
+        """Inject a JP gender description into Actor 1's profile in data_original.
+
+        When Actor 1 has no profile, the LLM has no way to know the
+        protagonist's gender, causing widespread pronoun errors.  Adding a
+        minimal JP line like '男性。本作の主人公。' gives the LLM explicit
+        context and eliminates most he/she mistakes.
+        """
+        import json as _json
+
+        data_dir = self.parser._find_data_dir(project_path)
+        if not data_dir:
+            return
+
+        # Prefer data_original (backup) so re-exports stay clean
+        original_dir = os.path.join(os.path.dirname(data_dir), "data_original")
+        actors_path = os.path.join(
+            original_dir if os.path.isdir(original_dir) else data_dir,
+            "Actors.json",
+        )
+        if not os.path.isfile(actors_path):
+            return
+
+        try:
+            with open(actors_path, "r", encoding="utf-8") as f:
+                actors = _json.load(f)
+        except Exception:
+            return
+
+        # Find Actor 1
+        actor1 = None
+        for a in actors:
+            if isinstance(a, dict) and a.get("id") == 1:
+                actor1 = a
+                break
+        if not actor1:
+            return
+
+        # Only inject if profile is empty or whitespace
+        current = (actor1.get("profile") or "").strip()
+        if current:
+            return  # already has a profile, don't overwrite
+
+        if gender == "male":
+            actor1["profile"] = "男性。本作の主人公。"
+        else:
+            actor1["profile"] = "女性。本作のヒロイン。"
+
+        try:
+            with open(actors_path, "w", encoding="utf-8") as f:
+                _json.dump(actors, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass  # non-critical — translation still works without it
+
     def _pre_translate_info(self, entries, actors_raw):
         """Translate game title + actor names/profiles before the gender dialog.
 
@@ -1110,8 +1164,13 @@ class MainWindow(QMainWindow):
                 box.exec()
                 if box.clickedButton() == male_btn:
                     actor1["auto_gender"] = "male"
+                    protag_gender = "male"
                 else:
                     actor1["auto_gender"] = "female"
+                    protag_gender = "female"
+
+                # Inject JP gender profile into data_original so LLM has context
+                self._inject_protag_profile(path, protag_gender)
 
         # Show gender assignment dialog with translated names
         if actors_raw:
@@ -2325,7 +2384,8 @@ class MainWindow(QMainWindow):
                         stripped += 1
                 if stripped:
                     self.trans_table.refresh()
-                    log.info("Stripped <WordWrap> tags from %d entries (no plugin)", stripped)
+                    self.statusbar.showMessage(
+                        f"Stripped <WordWrap> tags from {stripped} entries (no plugin)", 3000)
 
             self.parser.save_project(self.project.project_path, self.project.entries)
 
