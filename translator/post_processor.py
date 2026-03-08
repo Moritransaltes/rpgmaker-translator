@@ -25,6 +25,7 @@ class PostProcessResult:
     collapsed_color_codes: int = 0
     skill_message_space: int = 0
     spurious_newlines: int = 0
+    corrupt_speaker: int = 0
     total_entries_fixed: int = 0
     retranslate_ids: list = None  # Entry IDs that need LLM retranslation
 
@@ -58,6 +59,8 @@ class PostProcessResult:
             parts.append(f"{self.skill_message_space} skill message leading spaces")
         if self.spurious_newlines:
             parts.append(f"{self.spurious_newlines} spurious newlines in non-dialog")
+        if self.corrupt_speaker:
+            parts.append(f"{self.corrupt_speaker} corrupt speaker names")
         if self.retranslate_ids:
             parts.append(f"{len(self.retranslate_ids)} queued for retranslation")
         if not parts:
@@ -438,6 +441,31 @@ def _fix_spurious_newlines(entry) -> bool:
     return True
 
 
+# Speaker names should never be this long — if they are, the LLM
+# hallucinated a full sentence into the name field.
+_MAX_SPEAKER_NAME_LEN = 40
+
+
+def _fix_corrupt_speaker(entry, retranslate_ids: list) -> bool:
+    """Reset speaker_name translations that are obviously corrupt.
+
+    If a speaker name translation is longer than ~40 chars or contains
+    newlines, it's almost certainly a hallucinated sentence, not a name.
+    Clear it and mark for retranslation.
+    """
+    if entry.field != "speaker_name":
+        return False
+    trans = entry.translation
+    if not trans:
+        return False
+    if len(trans) > _MAX_SPEAKER_NAME_LEN or '\n' in trans:
+        entry.translation = ""
+        entry.status = "untranslated"
+        retranslate_ids.append(entry.id)
+        return True
+    return False
+
+
 def run_post_processing(entries: list, verbose: bool = False,
                         glossary: dict | None = None) -> PostProcessResult:
     """Run all post-processing fixes on a list of TranslationEntry objects.
@@ -459,6 +487,11 @@ def run_post_processing(entries: list, verbose: bool = False,
             continue
 
         entry_fixed = False
+
+        # Tier 0: Corrupt speaker names (must run first — poisons context)
+        if _fix_corrupt_speaker(entry, result.retranslate_ids):
+            result.corrupt_speaker += 1
+            entry_fixed = True
 
         # Tier 0: Name cleanups
         if _fix_name_dupes(entry):

@@ -2103,8 +2103,15 @@ class RPGMakerMVParser:
                     orig_lines = orig_lines.copy()
                     orig_lines[0] = entry.namebox + orig_lines[0]
                     # Prepend translated namebox to first translation line
+                    # Bare \n[N] codes render as inline actor names, so ensure
+                    # a space before the next word to avoid "SoumaI told her"
                     trans_lines = trans_lines.copy()
-                    trans_lines[0] = nb_translated + trans_lines[0]
+                    sep = ""
+                    if (_ACTOR_CODE_RE.match(nb_translated)
+                            and trans_lines[0]
+                            and trans_lines[0][0].isalpha()):
+                        sep = " "
+                    trans_lines[0] = nb_translated + sep + trans_lines[0]
                 # Allow extra lines — export inserts extra 401/405 commands
                 first = orig_lines[0] if orig_lines else ""
                 lookup = dialog_lookup if entry.field == "dialog" else scroll_lookup

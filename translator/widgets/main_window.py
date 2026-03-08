@@ -183,6 +183,7 @@ from .gpu_monitor import GPUMonitorPanel
 from .queue_panel import QueuePanel
 from .event_viewer import EventViewerPanel
 from .model_suggestion_dialog import ModelSuggestionDialog
+from .pipeline_bar import PipelineBar
 
 
 class MainWindow(QMainWindow):
@@ -254,6 +255,7 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._build_statusbar()
         self._connect_signals()
+        self.pipeline_bar.step_requested.connect(self._on_pipeline_step)
 
         # Apply dark mode by default
         self._apply_dark_mode()
@@ -312,7 +314,16 @@ class MainWindow(QMainWindow):
         self.queue_panel = QueuePanel()
         self.tabs.addTab(self.queue_panel, "Translation Queue")
 
-        self.setCentralWidget(self.tabs)
+        # Pipeline progress bar (below toolbar, above tabs)
+        self.pipeline_bar = PipelineBar()
+
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+        central_layout.addWidget(self.pipeline_bar)
+        central_layout.addWidget(self.tabs, 1)
+        self.setCentralWidget(central)
 
     def _build_menubar(self):
         """Build the menu bar with organized menus."""
@@ -389,7 +400,8 @@ class MainWindow(QMainWindow):
         # ── Translate menu ────────────────────────────────────────
         translate_menu = menubar.addMenu("Translate")
 
-        self.batch_db_action = QAction("Batch DB (Names && Terms)", self)
+        # Pipeline steps (match pipeline bar order)
+        self.batch_db_action = QAction("1. Translate DB (Names && Terms)", self)
         self.batch_db_action.setShortcut("Ctrl+D")
         self.batch_db_action.setToolTip(
             "Stage 1: Translate database names, descriptions, and system terms. "
@@ -399,7 +411,7 @@ class MainWindow(QMainWindow):
         self.batch_db_action.setEnabled(False)
         translate_menu.addAction(self.batch_db_action)
 
-        self.batch_dialogue_action = QAction("Batch Dialogue", self)
+        self.batch_dialogue_action = QAction("2. Translate Dialogue", self)
         self.batch_dialogue_action.setShortcut("Ctrl+T")
         self.batch_dialogue_action.setToolTip(
             "Stage 2: Translate dialogue, events, and plugin text. "
@@ -409,22 +421,23 @@ class MainWindow(QMainWindow):
         self.batch_dialogue_action.setEnabled(False)
         translate_menu.addAction(self.batch_dialogue_action)
 
-        self.batch_action = QAction("Batch All", self)
-        self.batch_action.setShortcut("Ctrl+Shift+T")
-        self.batch_action.setToolTip("Translate everything at once (DB + dialogue)")
-        self.batch_action.triggered.connect(self._batch_translate)
-        self.batch_action.setEnabled(False)
-        translate_menu.addAction(self.batch_action)
-
-        self.batch_actor_action = QAction("Batch by Actor", self)
-        self.batch_actor_action.setShortcut("Ctrl+Shift+A")
-        self.batch_actor_action.setToolTip(
-            "Translate dialogue grouped by speaker — female speakers first, "
-            "then male, then ungendered. Gives the LLM strong gender context."
+        self.cleanup_action = QAction("3. Clean Up Translations", self)
+        self.cleanup_action.setShortcut("Ctrl+Shift+U")
+        self.cleanup_action.setToolTip(
+            "Fix word-per-line, placeholder leaks, spacing, capitalization,\n"
+            "missing spaces after \\n[N], collapsed color codes, quotes, contractions"
         )
-        self.batch_actor_action.triggered.connect(self._batch_translate_by_actor)
-        self.batch_actor_action.setEnabled(False)
-        translate_menu.addAction(self.batch_actor_action)
+        self.cleanup_action.triggered.connect(self._cleanup_translations)
+        self.cleanup_action.setEnabled(False)
+        translate_menu.addAction(self.cleanup_action)
+
+        self.wordwrap_action = QAction("4. Wrap Text to Lines", self)
+        self.wordwrap_action.setToolTip(
+            "Redistribute translated text across lines to fit message window width"
+        )
+        self.wordwrap_action.triggered.connect(self._apply_wordwrap)
+        self.wordwrap_action.setEnabled(False)
+        translate_menu.addAction(self.wordwrap_action)
 
         translate_menu.addSeparator()
 
@@ -435,14 +448,6 @@ class MainWindow(QMainWindow):
 
         translate_menu.addSeparator()
 
-        self.wordwrap_action = QAction("Wrap Text to Lines", self)
-        self.wordwrap_action.setToolTip(
-            "Redistribute translated text across lines to fit message window width"
-        )
-        self.wordwrap_action.triggered.connect(self._apply_wordwrap)
-        self.wordwrap_action.setEnabled(False)
-        translate_menu.addAction(self.wordwrap_action)
-
         self.find_replace_action = QAction("Find && Replace...", self)
         self.find_replace_action.setShortcut("Ctrl+H")
         self.find_replace_action.setToolTip("Find and replace text in translations")
@@ -450,15 +455,27 @@ class MainWindow(QMainWindow):
         self.find_replace_action.setEnabled(False)
         translate_menu.addAction(self.find_replace_action)
 
-        self.cleanup_action = QAction("Clean Up Translations", self)
-        self.cleanup_action.setShortcut("Ctrl+Shift+U")
-        self.cleanup_action.setToolTip(
-            "Fix word-per-line, placeholder leaks, spacing, capitalization,\n"
-            "missing spaces after \\n[N], collapsed color codes, quotes, contractions"
+        # Advanced submenu — power-user batch modes and fixes
+        advanced_menu = translate_menu.addMenu("Advanced")
+
+        self.batch_action = QAction("Batch All (DB + Dialogue)", self)
+        self.batch_action.setShortcut("Ctrl+Shift+T")
+        self.batch_action.setToolTip("Translate everything at once (DB → glossary → dialogue)")
+        self.batch_action.triggered.connect(self._batch_translate)
+        self.batch_action.setEnabled(False)
+        advanced_menu.addAction(self.batch_action)
+
+        self.batch_actor_action = QAction("Batch by Actor", self)
+        self.batch_actor_action.setShortcut("Ctrl+Shift+A")
+        self.batch_actor_action.setToolTip(
+            "Translate dialogue grouped by speaker — female speakers first, "
+            "then male, then ungendered. Gives the LLM strong gender context."
         )
-        self.cleanup_action.triggered.connect(self._cleanup_translations)
-        self.cleanup_action.setEnabled(False)
-        translate_menu.addAction(self.cleanup_action)
+        self.batch_actor_action.triggered.connect(self._batch_translate_by_actor)
+        self.batch_actor_action.setEnabled(False)
+        advanced_menu.addAction(self.batch_actor_action)
+
+        advanced_menu.addSeparator()
 
         self.strip_actor_codes_action = QAction("Strip Duplicate Actor Codes", self)
         self.strip_actor_codes_action.setToolTip(
@@ -467,12 +484,7 @@ class MainWindow(QMainWindow):
         )
         self.strip_actor_codes_action.triggered.connect(self._strip_duplicate_actor_codes)
         self.strip_actor_codes_action.setEnabled(False)
-        translate_menu.addAction(self.strip_actor_codes_action)
-
-        translate_menu.addSeparator()
-
-        # Post-Process submenu (experimental)
-        postprocess_menu = translate_menu.addMenu("Post-Process (Experimental)")
+        advanced_menu.addAction(self.strip_actor_codes_action)
 
         self.polish_action = QAction("Polish Grammar", self)
         self.polish_action.setToolTip(
@@ -480,7 +492,7 @@ class MainWindow(QMainWindow):
         )
         self.polish_action.triggered.connect(self._polish_translations)
         self.polish_action.setEnabled(False)
-        postprocess_menu.addAction(self.polish_action)
+        advanced_menu.addAction(self.polish_action)
 
         self.consistency_action = QAction("Consistency Pass", self)
         self.consistency_action.setShortcut("Ctrl+Shift+C")
@@ -489,7 +501,7 @@ class MainWindow(QMainWindow):
         )
         self.consistency_action.triggered.connect(self._consistency_pass)
         self.consistency_action.setEnabled(False)
-        postprocess_menu.addAction(self.consistency_action)
+        advanced_menu.addAction(self.consistency_action)
 
         translate_menu.addSeparator()
 
@@ -638,7 +650,7 @@ class MainWindow(QMainWindow):
         menubar.addAction(self.settings_action)
 
     def _build_toolbar(self):
-        """Build a slim toolbar with quick-access translation controls."""
+        """Build a slim toolbar with quick-access controls."""
         toolbar = QToolBar("Quick Actions")
         toolbar.setIconSize(QSize(20, 20))
         toolbar.setMovable(False)
@@ -647,7 +659,6 @@ class MainWindow(QMainWindow):
         # Reuse actions created in _build_menubar
         toolbar.addAction(self.batch_db_action)
         toolbar.addAction(self.batch_dialogue_action)
-        toolbar.addAction(self.batch_action)
         toolbar.addAction(self.stop_action)
         toolbar.addSeparator()
         toolbar.addAction(self.export_action)
@@ -901,6 +912,8 @@ class MainWindow(QMainWindow):
         self.txt_export_action.setEnabled(False)
         self.create_patch_action.setEnabled(False)
         self.export_zip_action.setEnabled(False)
+
+        self.pipeline_bar.setVisible(False)
 
         self.setWindowTitle("RPG Maker Translator")
         self.statusbar.showMessage("Project closed.", 5000)
@@ -1595,6 +1608,19 @@ class MainWindow(QMainWindow):
         self.txt_export_action.setEnabled(True)
         self.create_patch_action.setEnabled(True)
         self.export_zip_action.setEnabled(True)
+
+        # Reset pipeline bar for manual mode (wizard controls its own flow)
+        if not self._wizard_active:
+            self.pipeline_bar.reset()
+            # Auto-detect already-completed steps
+            db_entries = [e for e in self.project.entries if e.file in self._DB_FILES]
+            dialogue_entries = [e for e in self.project.entries if e.file not in self._DB_FILES]
+            db_done = all(e.status != "untranslated" for e in db_entries) if db_entries else False
+            dlg_done = all(e.status != "untranslated" for e in dialogue_entries) if dialogue_entries else False
+            if db_done:
+                self.pipeline_bar.mark_done("db")
+            if dlg_done:
+                self.pipeline_bar.mark_done("dialogue")
 
     def _preload_model(self):
         """Unload stale models and load the active one into VRAM.
@@ -2408,6 +2434,8 @@ class MainWindow(QMainWindow):
                 f"Original Japanese files backed up in data_original/."
                 + plugin_msg
             )
+            if not self._wizard_active:
+                self.pipeline_bar.mark_done("export")
         except Exception as e:
             QMessageBox.critical(self, "Export Failed", str(e))
 
@@ -2679,6 +2707,8 @@ class MainWindow(QMainWindow):
             self._rebuild_glossary()
             self._autosave()
             self.file_tree.refresh_stats(self.project)
+            if not self._wizard_active:
+                self.pipeline_bar.mark_done("db")
 
             # Check if there are dialogue entries left
             untranslated_dialogue = [
@@ -2714,6 +2744,13 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.progress_label.setText("")
         self.file_tree.refresh_stats(self.project)
+
+        # Update pipeline bar
+        if not self._wizard_active:
+            if mode in ("db", "all"):
+                self.pipeline_bar.mark_done("db")
+            if mode in ("dialogue", "all"):
+                self.pipeline_bar.mark_done("dialogue")
         msg = f"Batch complete — {self.project.translated_count}/{self.project.total} translated"
         if codes_fixed:
             msg += f" ({codes_fixed} codes restored)"
@@ -3032,6 +3069,21 @@ class MainWindow(QMainWindow):
             f"Translating {effective}/{bar_total}{eta_str}{cost_str}: {text}"
         )
 
+    # ── Pipeline bar ──────────────────────────────────────────────
+
+    def _on_pipeline_step(self, step_key: str):
+        """Handle Next Step button click from the pipeline bar."""
+        actions = {
+            "db": self._batch_translate_db,
+            "dialogue": self._batch_translate_dialogue,
+            "cleanup": self._cleanup_translations,
+            "wordwrap": self._apply_wordwrap,
+            "export": self._export_to_game,
+        }
+        action = actions.get(step_key)
+        if action:
+            action()
+
     # ── Translation memory ─────────────────────────────────────────
 
     def _batch_translate(self):
@@ -3308,6 +3360,11 @@ class MainWindow(QMainWindow):
 
         self._current_batch_mode = mode
 
+        # Update pipeline bar
+        if not self._wizard_active:
+            step = "db" if mode == "db" else "dialogue" if mode == "dialogue" else "db"
+            self.pipeline_bar.mark_active(step)
+
         # Glossary prefill: exact-match entries skip LLM entirely
         gp_count = self._run_glossary_prefill()
         if gp_count:
@@ -3481,6 +3538,8 @@ class MainWindow(QMainWindow):
             else:
                 msg += f"\n\nAcross {len(files)} files."
         QMessageBox.information(self, "Word Wrap Applied", msg)
+        if not self._wizard_active:
+            self.pipeline_bar.mark_done("wordwrap")
 
     # Same regex as ollama_client for fixing contraction spacing:
     #   "I 've" → "I've"   "Couldn' t" → "Couldn't"   "do n't" → "don't"
@@ -3543,6 +3602,8 @@ class MainWindow(QMainWindow):
             self, "Clean Up Translations",
             "\n".join(parts) if parts else "No issues found — translations are clean."
         )
+        if not self._wizard_active:
+            self.pipeline_bar.mark_done("cleanup")
 
     def _strip_wordwrap_tags(self):
         """Remove all <WordWrap> tags from translations."""
