@@ -364,20 +364,52 @@ def _fix_skill_message_space(entry) -> bool:
     return True
 
 
-def _fix_collapsed_color_codes(entry, retranslate_ids: list) -> bool:
-    r"""Detect \c[N]\c[0] with nothing between them (lost highlight).
+def _fix_collapsed_color_codes(entry, retranslate_ids: list,
+                               glossary: dict | None = None) -> bool:
+    r"""Fix \c[N]\c[0] with nothing between them (lost highlight).
 
-    The color-highlighted word was lost during translation. Mark for
-    retranslation so the LLM can properly place the color codes.
+    Tries to reconstruct from the original: finds the JP text between
+    \c[N]...\c[0] in the original, looks it up in the glossary, and
+    inserts the EN name.  Falls back to inserting the raw JP text.
+    Only marks for retranslation if reconstruction fails entirely.
     """
     trans = entry.translation
     if not trans:
         return False
-    if _COLLAPSED_COLOR_RE.search(trans):
-        # Mark for retranslation — the highlighted words are missing
+    if not _COLLAPSED_COLOR_RE.search(trans):
+        return False
+
+    # Extract color-wrapped words from original: \c[N]word\c[0]
+    orig = entry.original
+    orig_words = re.findall(
+        r'\\[cC]\[\d+\]([^\\]+?)\\[cC]\[0\]', orig
+    )
+    if not orig_words:
+        # Can't reconstruct — mark for retranslation
         entry.translation = ""
         entry.status = "untranslated"
         retranslate_ids.append(entry.id)
+        return True
+
+    # Build lookup: JP word → EN translation (from glossary or raw JP)
+    word_iter = iter(orig_words)
+
+    def _replace_collapsed(m):
+        jp_word = next(word_iter, None)
+        if jp_word is None:
+            return m.group(0)  # no more words to fill
+        # Try glossary lookup
+        en_word = None
+        if glossary:
+            en_word = glossary.get(jp_word)
+        # Use JP word as fallback (still better than empty)
+        if not en_word:
+            en_word = jp_word
+        return m.group(1) + en_word + m.group(2)
+
+    new = _COLLAPSED_COLOR_RE.sub(_replace_collapsed, trans)
+    if new != trans:
+        entry.translation = new
         return True
     return False
 
@@ -406,11 +438,16 @@ def _fix_spurious_newlines(entry) -> bool:
     return True
 
 
-def run_post_processing(entries: list, verbose: bool = False) -> PostProcessResult:
+def run_post_processing(entries: list, verbose: bool = False,
+                        glossary: dict | None = None) -> PostProcessResult:
     """Run all post-processing fixes on a list of TranslationEntry objects.
 
     Modifies entries in-place. Returns a summary of fixes applied.
     Only processes entries with status 'translated' or 'reviewed'.
+
+    Args:
+        glossary: Optional JP→EN glossary for reconstructing collapsed
+                  color codes (character names the LLM dropped).
     """
     result = PostProcessResult()
     fixed_ids = set()
@@ -470,7 +507,7 @@ def run_post_processing(entries: list, verbose: bool = False) -> PostProcessResu
             result.space_after_name_code += 1
             entry_fixed = True
 
-        if _fix_collapsed_color_codes(entry, result.retranslate_ids):
+        if _fix_collapsed_color_codes(entry, result.retranslate_ids, glossary):
             result.collapsed_color_codes += 1
             entry_fixed = True
 
