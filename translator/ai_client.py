@@ -928,7 +928,6 @@ class AIClient:
         cleaned = re.sub(r'\u00abCODE\d+\u00bb', '', text)
         return bool(JAPANESE_RE.search(cleaned))
 
-    @staticmethod
     # Extract regex: same as CONTROL_CODE_RE but captures an optional
     # trailing space so it survives the LLM round-trip.  Without this,
     # "\C[0] Karen" → «CODE1» Karen → LLM drops space → «CODE1»Karen

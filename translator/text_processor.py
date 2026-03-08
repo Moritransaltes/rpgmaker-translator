@@ -24,69 +24,151 @@ FACE_OFFSET_PX = 156  # pixels consumed by face graphic + margin
 # Font is swapped to Consolas via gamefont.css during export,
 # so character counts are exact for this monospace font.
 WORDWRAP_PLUGIN_JS = r"""/*:
- * @plugindesc Render-time word wrap for translated text.
+ * @plugindesc Pre-render word wrap for translated text.
  * @author RPG Maker Translator
  *
  * @help
- * Wraps text at word boundaries during rendering, using actual pixel
- * measurements from the game engine. Handles face graphics, escape
- * codes, font size changes, and icons automatically.
+ * Wraps text at word boundaries BEFORE rendering by inserting line
+ * breaks into the text string at createTextState time.  Uses pixel-
+ * accurate measurement via contents.measureTextWidth().
  *
  * Hooks Window_Message (dialogue) and Window_Help (descriptions).
  * Does NOT affect choice windows, battle logs, popups, or other UI.
  *
- * Activated by <WordWrap> tag at the start of a text block.
- * Uses the same approach as YEP_MessageCore for maximum compatibility.
+ * Works on both RPG Maker MV and MZ — the pre-processing approach
+ * is engine-agnostic (no processCharacter / processNormalCharacter).
  *
+ * Activated by <WordWrap> tag at the start of a text block.
+ *
+ * Based on McKathlin_MessageControl's proven pre-render technique.
  * Auto-injected by RPG Maker Translator during export.
  */
 (function() {
     'use strict';
 
-    // ===== Shared wrap-check logic =====
-    function twrCheckWrap(win, textState) {
-        if (!textState) return false;
-        var ch = textState.text[textState.index];
-        if (ch !== ' ' && ch !== '\u3000') return false;
+    // ===== Text width measurement (strips escape codes) =====
+    var ICON_RE = /\x1bI\[\d{1,4}\]/g;
+    var ESCAPE_RE = /\x1b[A-Za-z{}\[\]$.|!><^]/g;
+    // Matches \x1b followed by optional letter and bracket content like \x1bC[2]
+    var BRACKET_RE = /\x1b[A-Za-z]?\[\d{1,5}\]/g;
 
-        var text = textState.text;
-        var idx = textState.index + 1;
-        var nextSpace = text.indexOf(' ', idx);
-        var nextBreak = text.indexOf('\n', idx);
-        if (nextSpace < 0) nextSpace = text.length;
-        if (nextBreak >= 0 && nextBreak < nextSpace) nextSpace = nextBreak;
-
-        var word = text.substring(textState.index, nextSpace);
-        var wordWidth = win.textWidth(word);
-        var maxWidth = win.contents ? win.contents.width : 408;
-        return (textState.x + wordWidth > maxWidth);
+    function printedTextWidth(win, text) {
+        // Count icons — each takes iconWidth + 4px
+        var iconCount = 0;
+        text = text.replace(ICON_RE, function() { iconCount++; return ''; });
+        // Strip bracket escape codes like \C[2], \FS[24], \V[3]
+        text = text.replace(BRACKET_RE, '');
+        // Strip remaining single-char escapes like \{ \} \$ \. \|
+        text = text.replace(ESCAPE_RE, '');
+        var iconWidth = (typeof ImageManager !== 'undefined' &&
+                         ImageManager.iconWidth) ? ImageManager.iconWidth + 4 : 36;
+        var measured = win.contents ? win.contents.measureTextWidth(text) : text.length * 14;
+        return measured + (iconCount * iconWidth);
     }
 
-    // ===== Window_Message hooks (dialogue) =====
+    // ===== Core: split paragraph into wrapped lines =====
+    function splitAtWrapPoints(win, text, width) {
+        var lines = [];
+        var start = 0;
+        while (start < text.length) {
+            var end = text.length;
+            var testLine = text.slice(start, end);
+            // Shrink by finding last space that fits
+            while (printedTextWidth(win, testLine) > width && end > start) {
+                var spaceIdx = testLine.lastIndexOf(' ');
+                var fwSpaceIdx = testLine.lastIndexOf('\u3000');
+                var breakAt = Math.max(spaceIdx, fwSpaceIdx);
+                if (breakAt <= 0) {
+                    // No space found — force break at character level
+                    while (end > start + 1 && printedTextWidth(win, text.slice(start, end)) > width) {
+                        end--;
+                    }
+                    break;
+                }
+                end = start + breakAt;
+                testLine = text.slice(start, end);
+            }
+            lines.push(text.slice(start, end).trimEnd());
+            // Skip past the space we broke at
+            start = end;
+            if (start < text.length) {
+                var ch = text.charCodeAt(start);
+                if (ch === 0x20 || ch === 0x3000) start++;
+            }
+        }
+        return lines.length ? lines : [''];
+    }
+
+    // ===== Wrap full text (handles existing newlines as paragraphs) =====
+    function wrapText(win, text) {
+        var width = win.contents ? win.contents.width : 408;
+        // Account for face graphic in Window_Message
+        if (win.newLineX) {
+            var dummy = { y: 0, height: 0 };
+            var faceX = win.newLineX(dummy);
+            if (faceX > 0) width -= faceX;
+        }
+        var paragraphs = text.split('\n');
+        var result = [];
+        for (var i = 0; i < paragraphs.length; i++) {
+            var p = paragraphs[i];
+            if (!p.length) { result.push(''); continue; }
+            var wrapped = splitAtWrapPoints(win, p, width);
+            for (var j = 0; j < wrapped.length; j++) {
+                result.push(wrapped[j]);
+            }
+        }
+        return result.join('\n');
+    }
+
+    // ===== convertEscapeCharacters: detect <WordWrap>, strip newlines =====
+    function hookConvertEsc(original) {
+        return function(text) {
+            this._twrWordWrap = false;
+            if (/<wordwrap>/i.test(text)) {
+                this._twrWordWrap = true;
+                text = text.replace(/<wordwrap>/gi, '');
+            }
+            text = original.call(this, text);
+            if (this._twrWordWrap) {
+                // Merge all lines into one paragraph (we re-wrap later)
+                text = text.replace(/[\n\r]+/g, ' ');
+                // Honour explicit <br> tags as hard line breaks
+                text = text.replace(/<(?:br|line break)>/gi, '\n');
+            }
+            return text;
+        };
+    }
 
     var _WM_convertEsc = Window_Message.prototype.convertEscapeCharacters;
-    Window_Message.prototype.convertEscapeCharacters = function(text) {
-        this._twrWordWrap = false;
-        if (/<wordwrap>/i.test(text)) {
-            this._twrWordWrap = true;
-            text = text.replace(/<wordwrap>/gi, '\n');
-        }
-        text = _WM_convertEsc.call(this, text);
-        if (this._twrWordWrap) {
-            text = text.replace(/[\n\r]+/g, '');
-            text = text.replace(/<(?:br|line break)>/gi, '\n');
-        }
-        return text;
-    };
+    Window_Message.prototype.convertEscapeCharacters = hookConvertEsc(_WM_convertEsc);
 
-    var _WM_processNormal = Window_Message.prototype.processNormalCharacter;
-    Window_Message.prototype.processNormalCharacter = function(textState) {
-        if (this._twrWordWrap && twrCheckWrap(this, textState)) {
-            this.processNewLine(textState);
-        }
-        _WM_processNormal.call(this, textState);
-    };
+    var _WH_convertEsc =
+        Window_Help.prototype.convertEscapeCharacters ||
+        Window_Base.prototype.convertEscapeCharacters;
+    Window_Help.prototype.convertEscapeCharacters = hookConvertEsc(_WH_convertEsc);
 
+    // ===== createTextState: pre-process wrap BEFORE rendering =====
+    function hookCreateTextState(original) {
+        return function(text, x, y, width) {
+            var textState = original.call(this, text, x, y, width);
+            if (this._twrWordWrap && textState && textState.text) {
+                textState.text = wrapText(this, textState.text);
+            }
+            return textState;
+        };
+    }
+
+    var _WM_createTS = Window_Message.prototype.createTextState;
+    Window_Message.prototype.createTextState = hookCreateTextState(_WM_createTS);
+
+    // Window_Help may inherit createTextState from Window_Base
+    var _WH_createTS =
+        Window_Help.prototype.createTextState ||
+        Window_Base.prototype.createTextState;
+    Window_Help.prototype.createTextState = hookCreateTextState(_WH_createTS);
+
+    // ===== processNewLine: handle face graphic offset + page break =====
     var _WM_processNewLine = Window_Message.prototype.processNewLine;
     Window_Message.prototype.processNewLine = function(textState) {
         _WM_processNewLine.call(this, textState);
@@ -108,35 +190,6 @@ WORDWRAP_PLUGIN_JS = r"""/*:
             return (textState.y + lineH > maxH);
         };
     }
-
-    // ===== Window_Help hooks (skill/item descriptions) =====
-
-    var _WH_convertEsc =
-        Window_Help.prototype.convertEscapeCharacters ||
-        Window_Base.prototype.convertEscapeCharacters;
-    Window_Help.prototype.convertEscapeCharacters = function(text) {
-        this._twrWordWrap = false;
-        if (/<wordwrap>/i.test(text)) {
-            this._twrWordWrap = true;
-            text = text.replace(/<wordwrap>/gi, '');
-        }
-        text = _WH_convertEsc.call(this, text);
-        if (this._twrWordWrap) {
-            // Strip manual line breaks — render-time wrap handles it
-            text = text.replace(/[\n\r]+/g, ' ');
-        }
-        return text;
-    };
-
-    var _WH_processNormal =
-        Window_Help.prototype.processNormalCharacter ||
-        Window_Base.prototype.processNormalCharacter;
-    Window_Help.prototype.processNormalCharacter = function(textState) {
-        if (this._twrWordWrap && twrCheckWrap(this, textState)) {
-            this.processNewLine(textState);
-        }
-        _WH_processNormal.call(this, textState);
-    };
 })();
 """
 
