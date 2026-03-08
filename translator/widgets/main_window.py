@@ -1198,7 +1198,9 @@ class MainWindow(QMainWindow):
             jp = entry.original
             en = entry.translation
             if jp and en and jp != en and jp not in self.project.glossary:
-                self.project.glossary[jp] = en
+                # Skip terms already covered by the general glossary
+                if jp not in self._general_glossary:
+                    self.project.glossary[jp] = en
         return len(self.project.glossary) - before
 
     def _title_case(self, text: str) -> str:
@@ -1232,7 +1234,9 @@ class MainWindow(QMainWindow):
         en = entry.translation
         if jp and en and jp != en and jp not in self.client.glossary:
             self.client.glossary[jp] = en
-            self.project.glossary[jp] = en
+            # Don't duplicate into project glossary if already in general
+            if jp not in self._general_glossary:
+                self.project.glossary[jp] = en
 
     def _rename_project_folder(self, path: str, translated_title: str) -> str:
         """Offer to rename the project folder to 'English Title - WIP'.
