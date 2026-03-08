@@ -13,6 +13,7 @@ from . import CONTROL_CODE_RE, JAPANESE_RE
 @dataclass
 class PostProcessResult:
     """Summary of what was fixed."""
+    name_dupes: int = 0
     word_per_line: int = 0
     code_leaks: int = 0
     wordwrap_tags: int = 0
@@ -33,6 +34,8 @@ class PostProcessResult:
 
     def __str__(self) -> str:
         parts = []
+        if self.name_dupes:
+            parts.append(f"{self.name_dupes} name(name) dupes")
         if self.word_per_line:
             parts.append(f"{self.word_per_line} word-per-line")
         if self.code_leaks:
@@ -63,6 +66,9 @@ class PostProcessResult:
 
 
 # ---------- Regexes ----------
+
+# Name(name) or Name (Name) — LLM appends romanization in parens
+_NAME_DUPE_RE = re.compile(r'(\b\w{2,})\s*\(\1\)', re.IGNORECASE)
 
 # <<CODE1>>, <<CODE2>>, etc. — guillemet placeholder leaks
 _CODE_LEAK_RE = re.compile(r'\u00abCODE\d+\u00bb')
@@ -125,6 +131,22 @@ def _is_db_short_field(entry) -> bool:
 def _count_newlines(text: str) -> int:
     """Count actual newline characters in text."""
     return text.count('\n')
+
+
+def _fix_name_dupes(entry) -> bool:
+    """Strip duplicate romanization in parentheses: Ria(ria) → Ria.
+
+    LLMs sometimes append the original reading in parens after
+    transliterating a Japanese name, e.g. "Karen (karen)" or "Ria(Ria)".
+    """
+    trans = entry.translation
+    if not trans:
+        return False
+    new = _NAME_DUPE_RE.sub(r'\1', trans)
+    if new != trans:
+        entry.translation = new
+        return True
+    return False
 
 
 def _fix_word_per_line(entry) -> bool:
@@ -400,6 +422,11 @@ def run_post_processing(entries: list, verbose: bool = False) -> PostProcessResu
             continue
 
         entry_fixed = False
+
+        # Tier 0: Name cleanups
+        if _fix_name_dupes(entry):
+            result.name_dupes += 1
+            entry_fixed = True
 
         # Tier 1: Zero-risk string cleanups
         if _fix_code_leaks(entry, result.retranslate_ids):
