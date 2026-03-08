@@ -414,7 +414,16 @@ class TranslationWizard(QDialog):
             self.detail_label.setText(
                 f"Done — {total_translated}/{self.mw.project.total} total entries translated.")
         elif step == WizardStep.RETRANSLATE:
-            self.detail_label.setText("Retranslation complete.")
+            # Re-run post-processing on the freshly retranslated entries
+            from ..post_processor import run_post_processing
+            result = run_post_processing(self.mw.project.entries)
+            self.mw._autosave()
+            parts = ["Retranslation complete"]
+            if result.total_entries_fixed:
+                parts.append(str(result))
+            if result.retranslate_ids:
+                parts.append(f"{len(result.retranslate_ids)} still broken")
+            self.detail_label.setText(" — ".join(parts) + ".")
 
         self._step_index += 1
         QTimer.singleShot(500, self._run_next_step)
