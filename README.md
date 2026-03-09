@@ -5,7 +5,7 @@
 <h1 align="center">RPG Maker Translator</h1>
 
 <p align="center">
-Translate RPG Maker MV/MZ games from Japanese to English.<br>
+Translate RPG Maker MV/MZ and TyranoScript* games from Japanese to English.<br>
 <b>Local LLM</b> (Ollama + Qwen 3.5 — free, private, no content filters) or <b>Cloud API</b> (OpenAI, Gemini, DeepSeek, Anthropic — experimental, pay-per-token).<br>
 Auto-tuned to maximize GPU speed. Pronoun-aware. Glossary-driven. Batch translation with resume.<br>
 Designed by a human, coded with <a href="https://claude.ai/code">Claude Code</a>.
@@ -21,7 +21,7 @@ Cloud API engine ported from <a href="https://github.com/dazedanon/DazedMTLTool"
 
 ## At a Glance
 
-Open a game folder. Hit Batch Translate. Get a playable English translation. Open it in RPG Maker to QA — no copying files, no manual setup.
+Open a game folder. Hit Batch Translate. Get a playable English translation. RPG Maker games open directly in the editor for QA — no copying files, no manual setup.
 
 | | |
 |---|---|
@@ -217,7 +217,10 @@ Project entries override general entries for the same JP term.
 |---|---|
 | RPG Maker MV (.json) | Supported |
 | RPG Maker MZ (.json) | Supported |
+| TyranoScript (.ks) | Testing* |
 | RPG Maker VX Ace (.rvdata2) | Planned |
+
+> **\*TyranoScript support** is functional but still being tested. Features include: auto-extraction from NW.js executables, `[r]`/`[p]`/`[emb]` tag preservation via `«CODE»` placeholders, self-calibrating word wrap from original JP line lengths, VN-specific LLM prompt, and a dedicated post-processor for tag leak cleanup. Open a `.exe` or extracted game folder and it auto-detects the engine.
 
 ### Target Languages
 
