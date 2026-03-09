@@ -167,7 +167,7 @@ QDialogButtonBox QPushButton {
 }
 """
 
-from ..ai_client import AIClient
+from ..ai_client import AIClient, build_system_prompt
 from ..rpgmaker_mv import RPGMakerMVParser
 from ..tyranoscript import TyranoScriptParser
 from ..project_model import TranslationProject
@@ -805,7 +805,7 @@ class MainWindow(QMainWindow):
             else:
                 self._project_type = "rpgmaker"
                 entries = self.parser.load_project(path)
-            self.client.project_type = self._project_type
+            self._sync_project_type(self._project_type)
         except FileNotFoundError as e:
             QMessageBox.warning(self, "Error", str(e))
             return
@@ -941,8 +941,7 @@ class MainWindow(QMainWindow):
 
         # Reset project
         self.project = TranslationProject()
-        self._project_type = "rpgmaker"
-        self.client.project_type = "rpgmaker"
+        self._sync_project_type("rpgmaker")
         self.file_tree.load_project(self.project)
         self.trans_table.set_entries([])
         self.event_viewer.set_entries([])
@@ -1582,8 +1581,7 @@ class MainWindow(QMainWindow):
             return False
 
         # Restore project type from saved state
-        self._project_type = self.project.project_type
-        self.client.project_type = self._project_type
+        self._sync_project_type(self.project.project_type)
         is_tyrano = self._project_type == "tyranoscript"
 
         # If saved project_path is stale (folder renamed/moved), update it
@@ -1711,6 +1709,23 @@ class MainWindow(QMainWindow):
                     self.pipeline_bar.mark_done("db")
                 if dlg_done:
                     self.pipeline_bar.mark_done("dialogue")
+
+    def _sync_project_type(self, ptype: str):
+        """Update project type on client and switch system prompt accordingly."""
+        self._project_type = ptype
+        self.client.project_type = ptype
+        # Auto-switch system prompt unless user has customized it
+        from ..ai_client import SYSTEM_PROMPT, TYRANO_SYSTEM_PROMPT
+        current = self.client.system_prompt.strip()
+        # Only auto-switch if using a default prompt (not user-customized)
+        if (current == SYSTEM_PROMPT.strip()
+                or current == TYRANO_SYSTEM_PROMPT.strip()
+                or not current):
+            self.client.system_prompt = build_system_prompt(
+                target_language=self.client.target_language,
+                model=self.client.model,
+                project_type=ptype,
+            )
 
     def _preload_model(self):
         """Unload stale models and load the active one into VRAM.

@@ -10,8 +10,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 from ..ai_client import (
-    AIClient, SYSTEM_PROMPT, SUGOI_SYSTEM_PROMPT, TARGET_LANGUAGES,
-    build_system_prompt, is_sugoi_model,
+    AIClient, SYSTEM_PROMPT, SUGOI_SYSTEM_PROMPT, TYRANO_SYSTEM_PROMPT,
+    TARGET_LANGUAGES, build_system_prompt, is_sugoi_model,
     PROVIDERS, PROVIDER_MODELS, PROMPT_PRESETS, DAZEDMTL_FULL_PROMPT,
     get_model_pricing, CLOUD_DEFAULT_WORKERS, LOCAL_DEFAULT_WORKERS,
 )
@@ -499,7 +499,8 @@ class SettingsDialog(QDialog):
         """Reset prompt to the recommended default for the current model/language."""
         model = self.model_combo.currentText()
         lang = self.lang_combo.currentData() or "English"
-        default_prompt = build_system_prompt(lang, model=model)
+        default_prompt = build_system_prompt(lang, model=model,
+                                            project_type=self.client.project_type)
         self._suppress_preset_change = True
         self.prompt_edit.setPlainText(default_prompt)
         # Match the prompt to the correct preset name
@@ -705,9 +706,11 @@ class SettingsDialog(QDialog):
         old_lang = self._orig_language
         current_model = self.model_combo.currentText()
         current_prompt = self.prompt_edit.toPlainText().strip()
-        old_prompt = build_system_prompt(old_lang, model=current_model)
+        ptype = self.client.project_type
+        old_prompt = build_system_prompt(old_lang, model=current_model, project_type=ptype)
         if current_prompt == old_prompt.strip():
-            self.prompt_edit.setPlainText(build_system_prompt(new_lang, model=current_model))
+            self.prompt_edit.setPlainText(build_system_prompt(new_lang, model=current_model,
+                                                              project_type=ptype))
             self._orig_language = new_lang
 
     def _on_model_changed(self, model_name: str):
@@ -730,7 +733,8 @@ class SettingsDialog(QDialog):
             self.model_hint_label.setText("")
 
         if self._is_known_prompt_template(current_prompt):
-            new_prompt = build_system_prompt(current_lang, model=model_name)
+            new_prompt = build_system_prompt(current_lang, model=model_name,
+                                            project_type=self.client.project_type)
             self.prompt_edit.setPlainText(new_prompt)
 
         # Auto-set batch size from model config (cloud providers only)
@@ -750,7 +754,11 @@ class SettingsDialog(QDialog):
         for name, text in PROMPT_PRESETS.items():
             if text and p == text.strip():
                 return True
-        return p == build_system_prompt(self.lang_combo.currentData() or "English").strip()
+        # Check TyranoScript prompt
+        if p == TYRANO_SYSTEM_PROMPT.strip():
+            return True
+        return p == build_system_prompt(self.lang_combo.currentData() or "English",
+                                       project_type=self.client.project_type).strip()
 
     # ── Save / Cancel ────────────────────────────────────────────────
 
