@@ -31,6 +31,8 @@ class PostProcessResult:
     broken_code_placeholders: int = 0
     hallucinated_tags: int = 0
     extra_tyrano_tags: int = 0
+    llm_refusals: int = 0
+    quote_mismatches: int = 0
     total_entries_fixed: int = 0
     retranslate_ids: list = None  # Entry IDs that need LLM retranslation
 
@@ -76,6 +78,10 @@ class PostProcessResult:
             parts.append(f"{self.hallucinated_tags} hallucinated tags")
         if self.extra_tyrano_tags:
             parts.append(f"{self.extra_tyrano_tags} extra [r]/[rr]/[heart] tags")
+        if self.llm_refusals:
+            parts.append(f"{self.llm_refusals} LLM refusals")
+        if self.quote_mismatches:
+            parts.append(f"{self.quote_mismatches} quote mismatches (line shift)")
         if self.retranslate_ids:
             parts.append(f"{len(self.retranslate_ids)} queued for retranslation")
         if not parts:
@@ -357,6 +363,53 @@ def _fix_extra_tyrano_tags(entry) -> bool:
     return changed
 
 
+# LLM refusal patterns — model refused to translate the content
+_REFUSAL_RE = re.compile(
+    r"I can'?t translate|I cannot translate|I'?m unable to translate"
+    r"|As an AI|sexually explicit|I cannot assist",
+    re.IGNORECASE,
+)
+
+
+def _fix_llm_refusal(entry, retranslate_ids: list) -> bool:
+    """Detect and clear LLM refusal responses, marking for retranslation."""
+    trans = entry.translation
+    if not trans:
+        return False
+    if _REFUSAL_RE.search(trans):
+        entry.translation = ""
+        entry.status = "untranslated"
+        retranslate_ids.append(entry.id)
+        return True
+    return False
+
+
+def _fix_quote_mismatch(entry, retranslate_ids: list) -> bool:
+    """Detect line-shifted translations where narration got dialogue quotes.
+
+    If original is narration (no Japanese quotes) but translation starts
+    with English quotes, the batch JSON likely shifted lines. Clears the
+    translation and marks for retranslation.
+    """
+    if entry.field != "dialog":
+        return False
+    orig = entry.original
+    trans = entry.translation
+    if not trans:
+        return False
+    # Original is dialogue (has Japanese quotes) — skip
+    if '「' in orig or '『' in orig:
+        return False
+    # Translation starts with quote marks — suspicious for narration
+    stripped = trans.lstrip()
+    if stripped and stripped[0] in ('"', '\u201c', "'"):
+        entry.translation = ""
+        entry.status = "untranslated"
+        retranslate_ids.append(entry.id)
+        return True
+    return False
+
+
 def _fix_wordwrap_tags(entry) -> bool:
     """Strip <WordWrap> from stored translations (injected at export only)."""
     trans = entry.translation
@@ -609,6 +662,20 @@ def run_post_processing(entries: list, verbose: bool = False,
             continue
 
         entry_fixed = False
+
+        # Tier 0: LLM refusals (clear and queue for retranslation)
+        if _fix_llm_refusal(entry, result.retranslate_ids):
+            result.llm_refusals += 1
+            entry_fixed = True
+            fixed_ids.add(entry.id)
+            continue  # Translation cleared, skip remaining fixes
+
+        # Tier 0: Line-shift detection (narration got dialogue quotes)
+        if _fix_quote_mismatch(entry, result.retranslate_ids):
+            result.quote_mismatches += 1
+            entry_fixed = True
+            fixed_ids.add(entry.id)
+            continue  # Translation cleared, skip remaining fixes
 
         # Tier 0: Corrupt speaker names (must run first — poisons context)
         if _fix_corrupt_speaker(entry, result.retranslate_ids):
