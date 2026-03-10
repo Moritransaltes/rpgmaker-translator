@@ -2,3 +2,4 @@ PyQt6
 requests
 Pillow
 openai
+wordninja

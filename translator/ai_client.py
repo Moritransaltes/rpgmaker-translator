@@ -167,7 +167,8 @@ Honorifics:
 Context-sensitive translation:
 - This is a visual novel — dialogue is conversational and character-driven. Keep translations natural and expressive.
 - For adult scenes, use natural and explicit English that matches the original intensity. Do not tone down or soften the language.
-- Do NOT capitalize common nouns mid-sentence unless they are proper names or titles."""
+- Do NOT capitalize common nouns mid-sentence unless they are proper names or titles.
+- Do NOT add quotation marks around dialogue. Japanese 「」 brackets are speech markers — the game engine already displays text in dialogue boxes, so quotes are redundant. Just translate the content without wrapping it in "quotes"."""
 
 
 # Sugoi Ultra 14B — JP→EN specialized model (fine-tuned from Qwen2.5-14B).
@@ -1017,11 +1018,19 @@ class AIClient:
             text = text.replace(key, code)
         return text
 
-    @staticmethod
-    def _convert_jp_brackets(text: str) -> str:
-        """Convert Japanese brackets to English equivalents."""
+    def _convert_jp_brackets(self, text: str) -> str:
+        """Convert Japanese brackets to English equivalents.
+
+        For TyranoScript projects, speech quotes 「」『』 are stripped
+        instead of converted to "", since dialogue is already in speech
+        boxes and quotes are visual noise.
+        """
+        strip_quotes = self.project_type == "tyranoscript"
         for jp, en in _JP_BRACKETS.items():
-            text = text.replace(jp, en)
+            if strip_quotes and en == '"':
+                text = text.replace(jp, '')
+            else:
+                text = text.replace(jp, en)
         return text
 
     # Regex to detect \N[n] actor name codes among extracted codes

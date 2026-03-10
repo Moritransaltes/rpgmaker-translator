@@ -33,6 +33,10 @@ class PostProcessResult:
     extra_tyrano_tags: int = 0
     llm_refusals: int = 0
     quote_mismatches: int = 0
+    emb_spacing: int = 0
+    dialogue_quotes: int = 0
+    missing_spaces: int = 0
+    restored_line_breaks: int = 0
     total_entries_fixed: int = 0
     retranslate_ids: list = None  # Entry IDs that need LLM retranslation
 
@@ -82,6 +86,14 @@ class PostProcessResult:
             parts.append(f"{self.llm_refusals} LLM refusals")
         if self.quote_mismatches:
             parts.append(f"{self.quote_mismatches} quote mismatches (line shift)")
+        if self.emb_spacing:
+            parts.append(f"{self.emb_spacing} [emb] spacing fixes")
+        if self.dialogue_quotes:
+            parts.append(f"{self.dialogue_quotes} dialogue quotes stripped")
+        if self.missing_spaces:
+            parts.append(f"{self.missing_spaces} missing spaces fixed")
+        if self.restored_line_breaks:
+            parts.append(f"{self.restored_line_breaks} line breaks restored")
         if self.retranslate_ids:
             parts.append(f"{len(self.retranslate_ids)} queued for retranslation")
         if not parts:
@@ -99,6 +111,9 @@ _CODE_LEAK_RE = re.compile(r'\u00abCODE\d+\u00bb')
 
 # <<CODE1>>, <<CODE2>> — angle bracket placeholder leaks
 _CODE_LEAK_ANGLE_RE = re.compile(r'<<CODE\d+>>')
+
+# [CODE1], [CODE2] — square bracket placeholder leaks (hallucinated by LLM)
+_CODE_LEAK_SQUARE_RE = re.compile(r'\[CODE\d+\]')
 
 # <WordWrap> tag (case insensitive)
 _WORDWRAP_TAG_RE = re.compile(r'<WordWrap>', re.IGNORECASE)
@@ -233,6 +248,7 @@ def _fix_code_leaks(entry, retranslate_ids: list) -> bool:
         return False
     new = _CODE_LEAK_RE.sub('', trans)
     new = _CODE_LEAK_ANGLE_RE.sub('', new)
+    new = _CODE_LEAK_SQUARE_RE.sub('', new)
     if new != trans:
         # Clean up artifacts: double spaces, space before punctuation
         new = _DOUBLE_SPACE_RE.sub(' ', new)
@@ -639,6 +655,176 @@ def _fix_corrupt_speaker(entry, retranslate_ids: list) -> bool:
     return False
 
 
+def _fix_dialogue_quotes(entry) -> bool:
+    """Strip dialogue quotes from TyranoScript translations.
+
+    Japanese 「」『』 brackets get converted to "" by the LLM, but
+    TyranoScript already displays text in speech boxes — quotes are
+    redundant visual noise.  Strip all double quotes from translations.
+    """
+    trans = entry.translation
+    if not trans or '"' not in trans:
+        return False
+    new = trans.replace('"', '')
+    # Clean up: collapse double spaces, strip leading/trailing whitespace
+    new = re.sub(r'  +', ' ', new).strip()
+    if new != trans:
+        entry.translation = new
+        return True
+    return False
+
+
+def _fix_missing_spaces(entry) -> bool:
+    """Fix concatenated words (missing spaces) using wordninja segmentation.
+
+    LLMs sometimes drop spaces between words, producing runs like
+    "usingher" or "itseems". Uses wordninja's word frequency model
+    to detect and split these.
+    """
+    trans = entry.translation
+    if not trans:
+        return False
+
+    try:
+        import wordninja
+    except ImportError:
+        return False
+
+    tag_re = re.compile(r'\[[^\]]+\]')
+
+    def try_split(match):
+        word = match.group()
+        parts = wordninja.split(word)
+        if len(parts) > 1 and all(len(p) >= 2 for p in parts):
+            if ''.join(parts).lower() == word.lower():
+                return ' '.join(parts)
+        return word
+
+    segments = tag_re.split(trans)
+    tags = tag_re.findall(trans)
+
+    new_segments = []
+    for seg in segments:
+        seg = re.sub(r'[a-z]{5,}', try_split, seg)
+        new_segments.append(seg)
+
+    result = ''
+    for i, seg in enumerate(new_segments):
+        result += seg
+        if i < len(tags):
+            result += tags[i]
+
+    # Also fix camelCase joins (lowercase immediately before uppercase)
+    # e.g. "Poweris" -> "Power is", "timeMea" -> "time Mea"
+    new_segments2 = []
+    for seg in tag_re.split(result):
+        seg = re.sub(r'([a-z])([A-Z])', r'\1 \2', seg)
+        # Fix comma without space after (but not in numbers like 1,000)
+        seg = re.sub(r',([a-zA-Z])', r', \1', seg)
+        new_segments2.append(seg)
+    tags2 = tag_re.findall(result)
+    result = ''
+    for i, seg in enumerate(new_segments2):
+        result += seg
+        if i < len(tags2):
+            result += tags2[i]
+
+    result = re.sub(r'  +', ' ', result)
+    if result != trans:
+        entry.translation = result
+        return True
+    return False
+
+
+def _fix_missing_line_breaks(entry) -> bool:
+    """Restore [r]/[rr] tags dropped by the LLM during translation.
+
+    TyranoScript uses [r] for line breaks and [rr] for blank lines within
+    text blocks. When the LLM drops these tags, consecutive lines in the
+    exported .ks file get concatenated without any break, causing text to
+    run together on screen.
+
+    Restores trailing [r]/[rr] from the original when completely absent
+    from the translation.
+    """
+    orig = entry.original
+    trans = entry.translation
+    if not trans or not orig:
+        return False
+
+    changed = False
+
+    # Restore missing [rr] — blank line breaks
+    orig_rr = orig.lower().count('[rr]')
+    trans_rr = trans.lower().count('[rr]')
+    if orig_rr > 0 and trans_rr == 0:
+        # Stat display lines: replace spaces between stat entries with [rr]
+        if re.search(r'[+-]\d', orig):
+            new = re.sub(r'\s+(?=[A-Za-z]+ [+-]\d)', '[rr]', trans)
+            if orig.rstrip().endswith('[rr]') and not new.rstrip().endswith('[rr]'):
+                new = new.rstrip() + '[rr]'
+            if new != trans:
+                trans = new
+                changed = True
+        elif orig.rstrip().endswith('[rr]'):
+            trans = trans.rstrip() + '[rr]'
+            changed = True
+
+    # Restore missing [r] — line breaks
+    orig_r = len(re.findall(r'\[r\]', orig, re.IGNORECASE))
+    trans_r = len(re.findall(r'\[r\]', trans, re.IGNORECASE))
+    if orig_r > 0 and trans_r == 0:
+        if re.search(r'\[r\]\s*$', orig, re.IGNORECASE):
+            trans = trans.rstrip() + '[r]'
+            changed = True
+
+    if changed:
+        entry.translation = trans
+    return changed
+
+
+def _fix_emb_spacing(entry) -> bool:
+    """Fix spacing around [emb exp="..."] inline variable tags.
+
+    TyranoScript [emb] tags render as inline text (e.g. "Papa", "I").
+    LLMs often produce broken spacing around «CODE» placeholders that
+    become [emb] tags after restoration:
+      - "the[emb ...]" → "the [emb ...]" (missing space before)
+      - "[emb ...] 's" → "[emb ...]'s" (unwanted space before possessive)
+      - "[emb ...] ," → "[emb ...]," (unwanted space before punctuation)
+      - "[emb ...][emb ...]word" → "[emb ...] [emb ...] word" (missing spaces)
+    """
+    trans = entry.translation
+    if not trans or '[emb' not in trans.lower():
+        return False
+
+    new = trans
+    emb_pat = r'\[emb\s+exp=[^\]]+\]'
+
+    # 1. Remove space between [emb] and possessive 's
+    new = re.sub(rf'({emb_pat})\s+(\'s\b)', r'\1\2', new)
+
+    # 2. Remove space between [emb] and punctuation
+    new = re.sub(rf'({emb_pat})\s+([.,;:!?\)])', r'\1\2', new)
+
+    # 3. Add space before [emb] when preceded by a word character
+    new = re.sub(rf'(\w)(\[emb\s)', r'\1 \2', new)
+
+    # 4. Add space after [emb] when followed by a word character (not 's)
+    new = re.sub(rf'({emb_pat})([A-Za-z])', r'\1 \2', new)
+
+    # 5. Add space between consecutive [emb] tags
+    new = re.sub(rf'({emb_pat})(\[emb\s)', r'\1 \2', new)
+
+    # 6. Collapse double spaces from above fixes
+    new = re.sub(r'  +', ' ', new)
+
+    if new != trans:
+        entry.translation = new
+        return True
+    return False
+
+
 def run_post_processing(entries: list, verbose: bool = False,
                         glossary: dict | None = None,
                         project_type: str = "rpgmaker") -> PostProcessResult:
@@ -709,6 +895,18 @@ def run_post_processing(entries: list, verbose: bool = False,
                 result.extra_tyrano_tags += 1
                 entry_fixed = True
 
+            if _fix_emb_spacing(entry):
+                result.emb_spacing += 1
+                entry_fixed = True
+
+            if _fix_dialogue_quotes(entry):
+                result.dialogue_quotes += 1
+                entry_fixed = True
+
+            if _fix_missing_line_breaks(entry):
+                result.restored_line_breaks += 1
+                entry_fixed = True
+
             # Note: _fix_tyrano_tag_leaks (blanket strip) is replaced by the
             # targeted fixes above.  Tags in translations are legitimate —
             # restored from «CODE» placeholders after LLM call.
@@ -727,6 +925,10 @@ def run_post_processing(entries: list, verbose: bool = False,
 
         if _fix_word_per_line(entry):
             result.word_per_line += 1
+            entry_fixed = True
+
+        if _fix_missing_spaces(entry):
+            result.missing_spaces += 1
             entry_fixed = True
 
         if _fix_double_spaces(entry):

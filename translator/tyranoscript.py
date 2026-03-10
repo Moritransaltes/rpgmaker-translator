@@ -5,9 +5,13 @@ Handles:
 - Speaker names (jname= definitions and #speaker tags)
 - Choice buttons ([glink text="..."])
 - Dialog prompts ([dialog text="..."])
+- Variable assignments ([eval exp="f.xxx = 'Japanese'"] — displayed via [emb])
+- System UI strings (tyrano/lang.js)
+- Game title (Config.tjs System.title)
 - Inline tags preserved as placeholders: [r], [rr], [l], [p], [emb ...], [heart], etc.
 """
 
+import json
 import os
 import re
 from pathlib import Path
@@ -37,9 +41,20 @@ _GLINK_TEXT_RE = re.compile(r'\[glink\s[^\]]*text="([^"]+)"[^\]]*\]', re.IGNOREC
 # dialog with text="..." attribute
 _DIALOG_TEXT_RE = re.compile(r'\[dialog\s[^\]]*text="([^"]+)"[^\]]*\]', re.IGNORECASE)
 
+# ptext with static text="..." attribute (not &expressions)
+_PTEXT_TEXT_RE = re.compile(r'\[ptext\s[^\]]*text="([^"&][^"]*)"[^\]]*\]', re.IGNORECASE)
+
 # Script blocks to skip entirely
 _ISCRIPT_START = re.compile(r'^\s*\[iscript\]', re.IGNORECASE)
 _ISCRIPT_END = re.compile(r'^\s*\[endscript\]', re.IGNORECASE)
+
+# [eval exp="f.xxx = 'Japanese'"] — variable assignment with JP string value
+# Captures: variable name (f.xxx) and string value (Japanese text)
+_EVAL_ASSIGN_RE = re.compile(
+    r"""\[eval\s+exp="(f\.\w+)\s*=\s*'([^']+)'"\]""", re.IGNORECASE)
+
+# Config.tjs System.title line
+_CONFIG_TITLE_RE = re.compile(r'^;System\.title=(.+)$', re.MULTILINE)
 
 
 class TyranoScriptParser:
@@ -78,6 +93,12 @@ class TyranoScriptParser:
             file_entries = self._parse_ks_file(ks_path, rel_path)
             entries.extend(file_entries)
 
+        # Extract system files (lang.js, Config.tjs)
+        data_root = os.path.dirname(scenario_dir)  # data/ directory
+        game_root = os.path.dirname(data_root)      # game root
+        entries.extend(self._extract_lang_js(game_root))
+        entries.extend(self._extract_config_title(data_root))
+
         return entries
 
     def save_project(self, project_dir: str, entries: list[TranslationEntry]):
@@ -97,11 +118,23 @@ class TyranoScriptParser:
             import shutil
             shutil.copytree(scenario_dir, original_dir)
 
+        # Build eval_var replacement map: 'original_jp' -> 'translated_en'
+        # These are used to replace string values in [eval] and [if/elsif]
+        eval_var_map: dict[str, str] = {}
+        for entry in entries:
+            if entry.field == "eval_var" and entry.translation and \
+               entry.status in ("translated", "reviewed"):
+                eval_var_map[entry.original] = entry.translation
+
         # Build lookup: file/line_num -> translation
         lookup: dict[str, dict[int, str]] = {}
         for entry in entries:
             if not entry.translation or entry.status not in ("translated", "reviewed"):
                 continue
+            if entry.field == "eval_var":
+                continue  # handled via eval_var_map
+            if entry.file.startswith("_system/"):
+                continue  # system files handled separately
             file_key = entry.file
             # Parse line number from entry ID
             parts = entry.id.rsplit("/", 1)
@@ -117,13 +150,21 @@ class TyranoScriptParser:
             elif entry.field == "choice":
                 lookup.setdefault(file_key, {})[entry.id] = entry.translation
 
-        # Process each file
-        for file_key, translations in lookup.items():
-            # Read from backup
+        # Process each .ks file (apply dialogue + eval_var replacements)
+        all_ks_files = set()
+        for f in Path(original_dir).rglob("*.ks"):
+            rel = str(f.relative_to(Path(original_dir))).replace("\\", "/")
+            all_ks_files.add(rel)
+        # Also include files from lookup that might not need eval_var
+        all_ks_files.update(lookup.keys())
+
+        for file_key in sorted(all_ks_files):
             src = os.path.join(original_dir, file_key)
             dst = os.path.join(scenario_dir, file_key)
             if not os.path.isfile(src):
                 continue
+
+            translations = lookup.get(file_key, {})
 
             with open(src, "r", encoding="utf-8") as f:
                 lines = f.readlines()
@@ -139,7 +180,6 @@ class TyranoScriptParser:
                             line, translations[line_num]) + "\n")
                 else:
                     # Check for jname/choice entries by ID
-                    replaced = False
                     for entry_id, trans in translations.items():
                         if isinstance(entry_id, str):
                             if entry_id.startswith(file_key + "/jname/"):
@@ -148,20 +188,96 @@ class TyranoScriptParser:
                                     line = line.replace(
                                         f'jname="{old_name}"',
                                         f'jname="{trans}"')
-                                    replaced = True
                             elif entry_id.startswith(file_key + "/choice/"):
-                                # Extract original text from ID
                                 old_text = entry_id.split("/choice/", 1)[1]
+                                if f'text="{old_text}"' in line:
+                                    # Replace spaces with &nbsp; in glink/dialog text
+                                    # TyranoScript parser strips spaces inside quoted attrs
+                                    nbsp_trans = trans.replace(" ", "&nbsp;")
+                                    line = line.replace(
+                                        f'text="{old_text}"',
+                                        f'text="{nbsp_trans}"')
+                            elif entry_id.startswith(file_key + "/ptext/"):
+                                old_text = entry_id.split("/ptext/", 1)[1]
                                 if f'text="{old_text}"' in line:
                                     line = line.replace(
                                         f'text="{old_text}"',
                                         f'text="{trans}"')
-                                    replaced = True
-                    new_lines.append(line if not replaced else line)
+
+                    # Apply eval_var replacements to [eval] and [if/elsif]
+                    if eval_var_map:
+                        line = self._apply_eval_var_replacements(
+                            line, eval_var_map)
+
+                    new_lines.append(line)
 
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             with open(dst, "w", encoding="utf-8") as f:
                 f.writelines(new_lines)
+
+        # Export system files
+        self._export_lang_js(project_dir, entries)
+        self._export_config_title(project_dir, entries)
+        self._patch_game_fonts(project_dir)
+
+    @staticmethod
+    def _patch_game_fonts(project_dir: str):
+        """Replace bundled Japanese fonts with a Latin font (Arial).
+
+        TyranoScript games bundle JP .ttf fonts (loaded via @font-face in
+        font.css) that render Latin space characters as zero-width, breaking
+        all English text spacing.  This replaces each bundled .ttf with a
+        copy of Arial so the engine's font-family references still resolve
+        but now render Latin text correctly.
+        """
+        import shutil
+
+        # Find the others/ dir where fonts live
+        for sub in ["data/others", "extracted/data/others"]:
+            others_dir = os.path.join(project_dir, sub)
+            if os.path.isdir(others_dir):
+                break
+        else:
+            return
+
+        # System Arial as replacement
+        arial_src = os.path.join(os.environ.get("WINDIR", r"C:\Windows"),
+                                 "Fonts", "arial.ttf")
+        if not os.path.isfile(arial_src):
+            return  # non-Windows or Arial missing
+
+        # Find font names referenced in font.css
+        font_css = None
+        for sub in ["tyrano/font.css", "extracted/tyrano/font.css"]:
+            candidate = os.path.join(project_dir, sub)
+            if os.path.isfile(candidate):
+                font_css = candidate
+                break
+
+        target_fonts = []
+        if font_css:
+            with open(font_css, "r", encoding="utf-8") as f:
+                css_text = f.read()
+            # Extract .ttf filenames from url("...") declarations
+            for m in re.finditer(r'url\(["\']?\.\./data/others/([^"\')\s]+\.ttf)', css_text):
+                target_fonts.append(m.group(1))
+
+        # Fallback: replace all .ttf files in others/
+        if not target_fonts:
+            for f in os.listdir(others_dir):
+                if f.lower().endswith(".ttf"):
+                    target_fonts.append(f)
+
+        for font_name in target_fonts:
+            font_path = os.path.join(others_dir, font_name)
+            if not os.path.isfile(font_path):
+                continue
+            # Backup original
+            backup = font_path + ".bak"
+            if not os.path.isfile(backup):
+                shutil.copy2(font_path, backup)
+            # Replace with Arial
+            shutil.copy2(arial_src, font_path)
 
     # ── Detection ──────────────────────────────────────────────
 
@@ -270,6 +386,7 @@ class TyranoScriptParser:
         in_script = False
         seen_jnames = set()
         seen_choices = set()
+        seen_eval_vars = set()
 
         for i, line in enumerate(lines):
             line_num = i + 1
@@ -299,6 +416,26 @@ class TyranoScriptParser:
                 current_speaker_id = speaker_match.group(1)
                 current_speaker = self._char_names.get(
                     current_speaker_id, current_speaker_id)
+                continue
+
+            # [eval] variable assignments with JP string values
+            # e.g. [eval exp="f.mea = 'わたし'"] — displayed via [emb exp="f.mea"]
+            eval_match = _EVAL_ASSIGN_RE.search(stripped)
+            if eval_match:
+                var_name = eval_match.group(1)   # e.g. "f.mea"
+                var_value = eval_match.group(2)  # e.g. "わたし"
+                if JAPANESE_RE.search(var_value):
+                    entry_id = f"{rel_path}/eval/{var_name}/{var_value}"
+                    if entry_id not in seen_eval_vars:
+                        seen_eval_vars.add(entry_id)
+                        entries.append(TranslationEntry(
+                            id=entry_id,
+                            file=rel_path,
+                            field="eval_var",
+                            original=var_value,
+                            status="untranslated",
+                            context=f"Variable {var_name} — displayed inline via [emb exp=\"{var_name}\"] in dialogue",
+                        ))
                 continue
 
             # jname definitions — extract for translation
@@ -354,9 +491,35 @@ class TyranoScriptParser:
                         ))
                 continue
 
-            # Skip full-line commands (but NOT dialogue that contains inline tags)
-            if _COMMAND_LINE_RE.match(stripped):
+            # Static ptext labels: [ptext ... text="日本語" ...]
+            ptext_match = _PTEXT_TEXT_RE.search(stripped)
+            if ptext_match:
+                text = ptext_match.group(1)
+                if JAPANESE_RE.search(text):
+                    entry_id = f"{rel_path}/ptext/{text}"
+                    if entry_id not in seen_choices:
+                        seen_choices.add(entry_id)
+                        entries.append(TranslationEntry(
+                            id=entry_id,
+                            file=rel_path,
+                            field="ptext",
+                            original=text,
+                            status="untranslated",
+                            context="On-screen label / menu text",
+                        ))
                 continue
+
+            # Skip full-line commands — but NOT dialogue that starts with
+            # an inline tag like [emb exp="f.mea"]Japanese text[p]
+            if _COMMAND_LINE_RE.match(stripped):
+                # Check if it starts with a known inline tag followed by text
+                if _INLINE_TAG_RE.match(stripped):
+                    text_only = _INLINE_TAG_RE.sub('', stripped).strip()
+                    if not JAPANESE_RE.search(text_only):
+                        continue
+                    # Falls through to dialogue extraction below
+                else:
+                    continue
 
             # If we get here, it's a text/dialogue line
             if not JAPANESE_RE.search(stripped):
@@ -395,11 +558,149 @@ class TyranoScriptParser:
 
         return entries
 
+    @staticmethod
+    def _apply_eval_var_replacements(
+            line: str, var_map: dict[str, str]) -> str:
+        """Replace JP string values in [eval] and [if/elsif] with translations.
+
+        Handles both assignment (f.x = 'JP') and comparison (f.x == 'JP').
+        Only replaces inside single-quoted strings to avoid touching code.
+        """
+        for jp_val, en_val in var_map.items():
+            if jp_val in line:
+                line = line.replace(f"'{jp_val}'", f"'{en_val}'")
+        return line
+
+    def _export_lang_js(self, project_dir: str, entries: list[TranslationEntry]):
+        """Write translated lang.js system strings back."""
+        lang_entries = {e.id.split("/")[-1]: e.translation
+                        for e in entries
+                        if e.file == "_system/lang.js"
+                        and e.translation
+                        and e.status in ("translated", "reviewed")}
+        if not lang_entries:
+            return
+
+        for sub in [project_dir, os.path.join(project_dir, "extracted")]:
+            lang_path = os.path.join(sub, "tyrano", "lang.js")
+            if not os.path.isfile(lang_path):
+                continue
+            # Backup
+            backup = lang_path + ".bak"
+            if not os.path.isfile(backup):
+                import shutil
+                shutil.copy2(lang_path, backup)
+
+            text = Path(lang_path).read_text(encoding="utf-8")
+            for key, trans in lang_entries.items():
+                # Replace "key":"old_value" with "key":"new_value"
+                text = re.sub(
+                    rf'("{key}"\s*:\s*)"([^"]*)"',
+                    rf'\1"{trans}"',
+                    text)
+            Path(lang_path).write_text(text, encoding="utf-8")
+            break
+
+    def _export_config_title(self, project_dir: str, entries: list[TranslationEntry]):
+        """Write translated game title to Config.tjs."""
+        title_entry = None
+        for e in entries:
+            if e.id == "_system/Config.tjs/title" and e.translation and \
+               e.status in ("translated", "reviewed"):
+                title_entry = e
+                break
+        if not title_entry:
+            return
+
+        # Find Config.tjs
+        scenario_dir = self._find_scenario_dir(project_dir)
+        if not scenario_dir:
+            return
+        data_root = os.path.dirname(scenario_dir)
+        config_path = os.path.join(data_root, "system", "Config.tjs")
+        if not os.path.isfile(config_path):
+            return
+
+        # Backup
+        backup = config_path + ".bak"
+        if not os.path.isfile(backup):
+            import shutil
+            shutil.copy2(config_path, backup)
+
+        text = Path(config_path).read_text(encoding="utf-8")
+        text = _CONFIG_TITLE_RE.sub(
+            f";System.title={title_entry.translation}", text)
+        # Also update projectID if present
+        old_id_re = re.compile(r'^;projectID=(.+)$', re.MULTILINE)
+        m = old_id_re.search(text)
+        if m and JAPANESE_RE.search(m.group(1)):
+            # Strip version suffix for projectID
+            proj_title = re.sub(r'\s*ver?\s*[\d.]+\s*$', '',
+                                title_entry.translation, flags=re.IGNORECASE)
+            text = old_id_re.sub(f";projectID={proj_title}", text)
+        Path(config_path).write_text(text, encoding="utf-8")
+
+    def _extract_lang_js(self, game_root: str) -> list[TranslationEntry]:
+        """Extract translatable strings from tyrano/lang.js."""
+        entries = []
+        for sub in [game_root, os.path.join(game_root, "extracted")]:
+            lang_path = os.path.join(sub, "tyrano", "lang.js")
+            if not os.path.isfile(lang_path):
+                continue
+            try:
+                text = Path(lang_path).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            # Parse the word:{} section — key:"value" pairs
+            # Match "key":"value" patterns where value contains Japanese
+            for m in re.finditer(r'"(\w+)"\s*:\s*"([^"]+)"', text):
+                key, value = m.group(1), m.group(2)
+                if JAPANESE_RE.search(value):
+                    entries.append(TranslationEntry(
+                        id=f"_system/lang.js/{key}",
+                        file="_system/lang.js",
+                        field="system_ui",
+                        original=value,
+                        status="untranslated",
+                        context="TyranoScript system UI string",
+                    ))
+            break  # only process first found
+        return entries
+
+    def _extract_config_title(self, data_root: str) -> list[TranslationEntry]:
+        """Extract game title from data/system/Config.tjs."""
+        entries = []
+        config_path = os.path.join(data_root, "system", "Config.tjs")
+        if not os.path.isfile(config_path):
+            return entries
+        try:
+            text = Path(config_path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return entries
+        m = _CONFIG_TITLE_RE.search(text)
+        if m and JAPANESE_RE.search(m.group(1)):
+            entries.append(TranslationEntry(
+                id="_system/Config.tjs/title",
+                file="_system/Config.tjs",
+                field="game_title",
+                original=m.group(1).strip(),
+                status="untranslated",
+                context="Game window title bar",
+            ))
+        return entries
+
+    # Tags that act as line terminators in TyranoScript —
+    # if a dialogue line ends with one of these, no trailing space needed
+    _LINE_TERM_RE = re.compile(
+        r'\[(?:r|rr|p|l|cm)\]\s*$', re.IGNORECASE)
+
     def _apply_dialogue_translation(self, original_line: str, translation: str) -> str:
         """Replace the text content of a dialogue line with its translation.
 
-        Preserves leading whitespace and any trailing inline tags that
-        the translation might have dropped.
+        Preserves leading whitespace.  Appends a trailing space when the
+        translation doesn't end with an inline break tag ([r], [p], etc.)
+        so that TyranoScript's line-concatenation doesn't fuse English
+        words across source lines (e.g. "succubus's" + "status" → ok).
         """
         # Preserve original indentation
         indent = ""
@@ -409,16 +710,39 @@ class TyranoScriptParser:
             else:
                 break
 
+        # If translation doesn't end with a break tag, append a Unicode
+        # non-breaking space (U+00A0) so consecutive dialogue lines don't
+        # fuse words together.  Regular spaces get stripped by $.trim() in
+        # the TyranoScript parser, but U+00A0 is not ASCII whitespace so
+        # $.trim() preserves it, and it renders as a normal space.
+        trimmed = translation.rstrip()
+        if trimmed and not self._LINE_TERM_RE.search(trimmed):
+            translation = trimmed + "\u00A0"
+
         return indent + translation
 
     def get_game_title(self, project_dir: str) -> str:
-        """Try to extract game title from package.json or index.html."""
+        """Try to extract game title from Config.tjs or package.json."""
+        # Try Config.tjs first (most reliable for TyranoScript)
+        scenario_dir = self._find_scenario_dir(project_dir)
+        if scenario_dir:
+            config_path = os.path.join(
+                os.path.dirname(scenario_dir), "system", "Config.tjs")
+            if os.path.isfile(config_path):
+                try:
+                    text = Path(config_path).read_text(encoding="utf-8")
+                    m = _CONFIG_TITLE_RE.search(text)
+                    if m:
+                        return m.group(1).strip()
+                except (OSError, UnicodeDecodeError):
+                    pass
+
+        # Fallback to package.json
         for sub in ["", "extracted"]:
             base = os.path.join(project_dir, sub) if sub else project_dir
             pkg = os.path.join(base, "package.json")
             if os.path.isfile(pkg):
                 try:
-                    import json
                     with open(pkg, "r", encoding="utf-8") as f:
                         data = json.load(f)
                     title = data.get("window", {}).get("title", "")
