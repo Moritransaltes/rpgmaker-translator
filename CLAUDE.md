@@ -29,7 +29,7 @@ e:\Hgames\Translator RPG Games\
 │   ├── text_processor.py            # Plugin analysis + word wrap processor
 │   ├── default_glossary.py          # ~100 preset JP→EN terms for common RPG vocabulary
 │   ├── auto_tuner.py                # GPU-aware batch size auto-calibration
-│   ├── image_translator.py          # OCR + translate + render for game images
+│   ├── image_translator.py          # Multimodal OCR + translate + render + verify for game images
 │   ├── utils.py                     # Shared utility functions
 │   └── widgets/
 │       ├── __init__.py
@@ -69,8 +69,9 @@ e:\Hgames\Translator RPG Games\
 
 ### Key Modules
 
-#### `ollama_client.py` — LLM Translation
+#### `ollama_client.py` — LLM Translation (actually `ai_client.py`)
 - POST `/api/chat` with system prompt + user message
+- **Multimodal support**: `vision_chat()` sends images + text to the model for OCR and verification (Ollama format or OpenAI vision format for cloud)
 - **System prompt**: Specialized for RPG/eroge translation — faithful adult content, honorific preservation (-san, -chan, etc.), context-sensitive verbs
 - **Target language**: Configurable (supports 12 languages with quality ratings); default English
 - **Deterministic output**: `temperature: 0` + `seed: 42` for consistent translations across runs
@@ -122,6 +123,16 @@ e:\Hgames\Translator RPG Games\
 - Detects message window width, font size, word wrap plugin tags (`<WordWrap>`)
 - `TextProcessor`: Applies word wrapping respecting control code visual width
 - **Face-aware word wrap**: When `entry.has_face` is True, wraps at `FACE_CHARS_PER_LINE` (35) instead of the full window width — face/portrait graphic takes ~144px of the message window
+
+#### `image_translator.py` — Image Translation
+- Single multimodal model (e.g. Qwen 3.5) handles OCR, translation, and verification — no separate vision model needed
+- `AIClient.vision_chat()` sends image + prompt to model (Ollama multimodal format or OpenAI vision format for cloud)
+- **OCR pipeline**: 3-attempt retry (scaled → full res → 2x upscale for small images), 20% bbox padding
+- **Two render modes**: "Preserve Background" (icon-preserving, clears only text region) and "Clean Boxes" (white rounded boxes on black, legacy)
+- **Icon-preserving render**: detects icon boundary via column scanning, clears text pixels right of icon, samples original text color, draws English with shadow
+- **Verify loop**: sends rendered image back to model for QA check (Japanese remnants, text overlap, readability), results shown in Verify column
+- **Two-state sprite sheet detection**: pairs top/bottom halves by matching text for RPG Maker menu images
+- RPGMVP encryption round-trip: decrypt to read, `encrypt_to_rpgmvp()` to write back
 
 #### `default_glossary.py` — Preset Glossary
 - ~100 common JP→EN translations for RPG terms, body parts, expressions

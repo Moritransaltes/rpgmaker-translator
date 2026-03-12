@@ -138,27 +138,6 @@ class SettingsDialog(QDialog):
         self.model_hint_label.setWordWrap(True)
         form.addRow("", self.model_hint_label)
 
-        # Vision model (for image translation OCR — Ollama only)
-        vision_row = QHBoxLayout()
-        self.vision_combo = QComboBox()
-        self.vision_combo.setEditable(True)
-        self.vision_combo.setMinimumWidth(250)
-        self.vision_combo.setToolTip(
-            "Model for image OCR (e.g. qwen3.5:9b, qwen3-vl:8b).\n"
-            "Used by Translate Images to detect Japanese text in game images.\n"
-            "Any multimodal model that accepts images will work.\n"
-            "Leave empty to disable image translation.\n"
-            "(Ollama only)"
-        )
-        vision_row.addWidget(self.vision_combo)
-
-        self.vision_refresh_btn = QPushButton("Refresh")
-        self.vision_refresh_btn.clicked.connect(self._refresh_vision_models)
-        vision_row.addWidget(self.vision_refresh_btn)
-
-        self._vision_label = QLabel("Image OCR Model:")
-        form.addRow(self._vision_label, vision_row)
-
         self.status_label = QLabel("")
         form.addRow("", self.status_label)
 
@@ -410,7 +389,7 @@ class SettingsDialog(QDialog):
         self.script_strings_check.setChecked(
             self.parser.extract_script_strings if self.parser else False
         )
-        self.vision_combo.setCurrentText(getattr(self.client, "vision_model", "") or "")
+        # Vision model removed — main model is now multimodal (handles OCR + translate)
 
         # Apply provider visibility and fetch models
         self._on_provider_changed(self.client.provider)
@@ -433,9 +412,7 @@ class SettingsDialog(QDialog):
         self.url_edit.setVisible(is_ollama or is_custom)
 
         # Vision model: Ollama only
-        self._vision_label.setVisible(is_ollama)
-        self.vision_combo.setVisible(is_ollama)
-        self.vision_refresh_btn.setVisible(is_ollama)
+        # Vision model UI removed — main model handles image OCR
 
         # Refresh button: only for Ollama (cloud uses preset models)
         self.refresh_btn.setVisible(is_ollama or is_custom)
@@ -574,22 +551,6 @@ class SettingsDialog(QDialog):
     def _on_models_fetched(self, models: list):
         """Called when the background model fetch completes."""
         self._populate_model_combo(models)
-        self._populate_vision_combo(models)
-
-    def _populate_vision_combo(self, all_models: list):
-        """Populate the vision model combo from an already-fetched model list."""
-        models = list(all_models)
-        current = self.vision_combo.currentText()
-        self.vision_combo.blockSignals(True)
-        self.vision_combo.clear()
-        if models:
-            for m in sorted(models):
-                self.vision_combo.addItem(m)
-            if current in models:
-                self.vision_combo.setCurrentText(current)
-        else:
-            self.vision_combo.setCurrentText(current)
-        self.vision_combo.blockSignals(False)
 
     def _populate_model_combo(self, models: list):
         """Populate the model combo from an already-fetched model list."""
@@ -626,16 +587,6 @@ class SettingsDialog(QDialog):
             self.url_edit.text().strip() or "http://localhost:11434",
         )
         self._model_fetcher.done.connect(self._populate_model_combo)
-        self.status_label.setText("Fetching models...")
-        self._model_fetcher.start()
-
-    def _refresh_vision_models(self):
-        """Fetch available vision models from Ollama (used by Refresh button)."""
-        self._model_fetcher = _ModelFetcher(
-            self.client,
-            self.url_edit.text().strip() or "http://localhost:11434",
-        )
-        self._model_fetcher.done.connect(self._populate_vision_combo)
         self.status_label.setText("Fetching models...")
         self._model_fetcher.start()
 
@@ -789,7 +740,7 @@ class SettingsDialog(QDialog):
         self.client.system_prompt = self.prompt_edit.toPlainText().strip() or SYSTEM_PROMPT
         self.client._prompt_preset = self.prompt_preset_combo.currentText()
         self.client.target_language = self.lang_combo.currentData() or "English"
-        self.client.vision_model = self.vision_combo.currentText().strip()
+        # Vision model removed — main model handles image OCR
         if self.parser:
             self.parser.context_size = self.context_spin.value()
 

@@ -67,18 +67,19 @@ _STATUS_COLORS_DARK = {
 # ── Worker ───────────────────────────────────────────────────────
 
 class _ImageWorker(QObject):
-    """Background worker for OCR + translate + render."""
+    """Background worker for OCR + translate + render + verify."""
     image_done = pyqtSignal(int)            # row index
     image_error = pyqtSignal(int, str)      # row index, error message
     all_done = pyqtSignal()
 
     def __init__(self, translator: ImageTranslator, entries: list[ImageEntry],
-                 indices: list[int], out_base: str):
+                 indices: list[int], out_base: str, render_mode: str = "preserve"):
         super().__init__()
         self.translator = translator
         self.entries = entries
         self.indices = indices
         self.out_base = out_base
+        self.render_mode = render_mode
         self._cancelled = False
 
     def cancel(self):
@@ -103,10 +104,21 @@ class _ImageWorker(QObject):
                 # Render to output (always .png)
                 rel = os.path.join(entry.subdir, _png_output_name(entry.filename))
                 out_path = os.path.join(self.out_base, rel)
-                self.translator.render_translated(entry.path, regions, out_path)
+                self.translator.render_translated(
+                    entry.path, regions, out_path, mode=self.render_mode)
 
                 entry.output_path = out_path
                 entry.status = "translated"
+
+                # Verify rendered image
+                try:
+                    result = self.translator.verify_render(out_path)
+                    entry.error = ""
+                    if not result.get("ok", True):
+                        entry.error = "; ".join(result.get("issues", []))
+                except Exception:
+                    pass  # verify failure is non-fatal
+
                 self.image_done.emit(idx)
 
             except Exception as e:
@@ -187,6 +199,16 @@ class ImagePanel(QWidget):
         self.status_filter.currentTextChanged.connect(self._refresh_table)
         toolbar.addWidget(self.status_filter)
 
+        toolbar.addWidget(QLabel("Render:"))
+        self.render_mode = QComboBox()
+        self.render_mode.addItem("Preserve Background", ImageTranslator.RENDER_PRESERVE)
+        self.render_mode.addItem("Clean Boxes", ImageTranslator.RENDER_CLEAN)
+        self.render_mode.setToolTip(
+            "Preserve Background: keeps icons and original art, clears only text\n"
+            "Clean Boxes: white rounded boxes on black (legacy mode)"
+        )
+        toolbar.addWidget(self.render_mode)
+
         toolbar.addStretch()
         self.stats_label = QLabel("No project loaded")
         toolbar.addWidget(self.stats_label)
@@ -223,8 +245,8 @@ class ImagePanel(QWidget):
 
         # ── Image table ───────────────────────────────────────────
         self.image_table = QTableWidget()
-        self.image_table.setColumnCount(4)
-        self.image_table.setHorizontalHeaderLabels(["St", "Filename", "Regions", "Status"])
+        self.image_table.setColumnCount(5)
+        self.image_table.setHorizontalHeaderLabels(["St", "Filename", "Regions", "Status", "Verify"])
         header = self.image_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         self.image_table.setColumnWidth(0, 30)
@@ -232,6 +254,7 @@ class ImagePanel(QWidget):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         self.image_table.setColumnWidth(2, 60)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.image_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.image_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.image_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -309,15 +332,11 @@ class ImagePanel(QWidget):
 
         self._out_base = os.path.join(os.path.dirname(self._img_dir), "img_translated")
 
-        # Build translator
-        vision_model = getattr(client, "vision_model", "") or ""
-        if vision_model:
-            self._translator = ImageTranslator(
-                ollama_url=client.base_url,
-                vision_model=vision_model,
-                text_client=client,
-                encryption_key=self._encryption_key,
-            )
+        # Build translator — single multimodal client handles OCR + translate + verify
+        self._translator = ImageTranslator(
+            client=client,
+            encryption_key=self._encryption_key,
+        )
 
         # Populate folder list
         self.folder_list.clear()
@@ -328,9 +347,9 @@ class ImagePanel(QWidget):
             self.folder_list.addItem(item)
 
         self.stats_label.setText(f"{len(subdirs)} folders found")
-        self.translate_all_btn.setEnabled(bool(subdirs) and bool(vision_model))
-        self.translate_btn.setEnabled(bool(vision_model))
-        self.retranslate_btn.setEnabled(bool(vision_model))
+        self.translate_all_btn.setEnabled(bool(subdirs))
+        self.translate_btn.setEnabled(True)
+        self.retranslate_btn.setEnabled(True)
         self.skip_btn.setEnabled(True)
 
     # ── Folder selection ──────────────────────────────────────────
@@ -418,6 +437,22 @@ class ImagePanel(QWidget):
             if color:
                 st.setBackground(color)
             self.image_table.setItem(row, 3, st)
+
+            # Verify status
+            if entry.status == "translated":
+                if entry.error:
+                    verify_text = "\u26a0 " + entry.error[:40]  # warning + truncated issues
+                    verify_item = QTableWidgetItem(verify_text)
+                    verify_item.setForeground(QColor(255, 180, 60))
+                else:
+                    verify_item = QTableWidgetItem("\u2713")  # checkmark
+                    verify_item.setForeground(QColor(80, 200, 80))
+            else:
+                verify_item = QTableWidgetItem("")
+            verify_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if color:
+                verify_item.setBackground(color)
+            self.image_table.setItem(row, 4, verify_item)
 
         # Update stats
         total = len(self._entries)
@@ -562,7 +597,8 @@ class ImagePanel(QWidget):
         rel = os.path.join(entry.subdir, _png_output_name(entry.filename))
         out_path = os.path.join(self._out_base, rel)
         try:
-            self._translator.render_translated(entry.path, regions, out_path)
+            mode = self.render_mode.currentData() or ImageTranslator.RENDER_PRESERVE
+            self._translator.render_translated(entry.path, regions, out_path, mode=mode)
             entry.output_path = out_path
             entry.status = "translated"
 
@@ -641,8 +677,10 @@ class ImagePanel(QWidget):
         self.translate_btn.setEnabled(False)
 
         self._thread = QThread(self)
+        mode = self.render_mode.currentData() or ImageTranslator.RENDER_PRESERVE
         self._worker = _ImageWorker(
-            self._translator, self._entries, indices, self._out_base
+            self._translator, self._entries, indices, self._out_base,
+            render_mode=mode,
         )
         self._worker.moveToThread(self._thread)
 

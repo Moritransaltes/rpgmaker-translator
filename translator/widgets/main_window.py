@@ -252,7 +252,6 @@ class MainWindow(QMainWindow):
         self._wizard_active = False
         self._last_save_path = ""
         self._general_glossary = {}  # persists across all projects
-        self.client.vision_model = ""  # vision model for image OCR
 
         # Restore persistent settings before building UI
         self._load_settings()
@@ -729,8 +728,7 @@ class MainWindow(QMainWindow):
                 if self._restore_from_state(save_path):
                     self._enable_project_actions()
                     self.plugin_analyzer.analyze_project(path)
-                    if getattr(self.client, "vision_model", ""):
-                        self.image_panel.set_project(path, self.client)
+                    self.image_panel.set_project(path, self.client)
                     # Count plugin entries for status message
                     plugin_count = sum(
                         1 for e in self.project.entries if e.file == "plugins.js"
@@ -856,9 +854,8 @@ class MainWindow(QMainWindow):
 
         self._enable_project_actions()
 
-        # Initialize image panel if vision model is set
-        if getattr(self.client, "vision_model", ""):
-            self.image_panel.set_project(path, self.client)
+        # Initialize image panel
+        self.image_panel.set_project(path, self.client)
 
         if is_tyrano:
             self.statusbar.showMessage(
@@ -1555,8 +1552,8 @@ class MainWindow(QMainWindow):
             return
         self._enable_project_actions()
 
-        # Initialize image panel if vision model is set
-        if self.project.project_path and getattr(self.client, "vision_model", ""):
+        # Initialize image panel
+        if self.project.project_path:
             self.image_panel.set_project(self.project.project_path, self.client)
 
         self.statusbar.showMessage(
@@ -3068,8 +3065,7 @@ class MainWindow(QMainWindow):
             self.engine.batch_size = cfg["batch_size"]
         if "max_history" in cfg:
             self.engine.max_history = cfg["max_history"]
-        if "vision_model" in cfg:
-            self.client.vision_model = cfg["vision_model"]
+        # vision_model removed — main model handles image OCR
         if "extract_script_strings" in cfg:
             self.parser.extract_script_strings = cfg["extract_script_strings"]
         if "single_401_mode" in cfg:
@@ -3111,7 +3107,7 @@ class MainWindow(QMainWindow):
             "wordwrap_override": getattr(self.plugin_analyzer, "_manual_chars_per_line", 0),
             "general_glossary": self._general_glossary,
             "target_language": self.client.target_language,
-            "vision_model": getattr(self.client, "vision_model", ""),
+            # vision_model removed — main model handles image OCR
             "extract_script_strings": self.parser.extract_script_strings,
             "single_401_mode": self.parser.single_401_mode,
             "auto_tune": self.engine.auto_tune,
@@ -5083,16 +5079,6 @@ class MainWindow(QMainWindow):
         """Switch to Image Translation tab and initialize it."""
         if not self.project.project_path:
             QMessageBox.warning(self, "Error", "Open a project first.")
-            return
-
-        vision_model = getattr(self.client, "vision_model", "")
-        if not vision_model:
-            QMessageBox.warning(
-                self, "No Vision Model",
-                "Set a vision model in Settings first.\n\n"
-                "Recommended: qwen3-vl:8b\n"
-                "Install with: ollama pull qwen3-vl:8b",
-            )
             return
 
         self.image_panel.set_project(self.project.project_path, self.client)

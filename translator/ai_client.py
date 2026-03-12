@@ -429,7 +429,6 @@ class AIClient:
         self.actor_genders = {}  # {actor_id(int): "male"/"female"/"unknown"}
         self.actor_names = {}    # {actor_id(int): "name string"}
         self.glossary = {}       # JP term -> EN translation forced mappings
-        self.vision_model = ""   # Vision model for image OCR
         self.dazed_mode = False  # DazedMTL mode toggle (batch 30, DazedMTL prompt)
         self.project_type = "rpgmaker"  # "rpgmaker" | "tyranoscript"
         self._managed_proc = None  # subprocess.Popen if we started Ollama
@@ -675,6 +674,64 @@ class AIClient:
         # Return in Ollama format so all callers stay unchanged
         return {"message": {"content": content}}
 
+    def vision_chat(self, image_base64: str, prompt: str,
+                    system: str = "", timeout: int = 180) -> str:
+        """Send an image + text prompt to the model (multimodal).
+
+        Works with Qwen 3.5 and other multimodal models via Ollama.
+        For cloud APIs, uses the OpenAI vision message format.
+
+        Args:
+            image_base64: Base64-encoded image data.
+            prompt: Text prompt to send alongside the image.
+            system: Optional system prompt.
+            timeout: Request timeout in seconds.
+
+        Returns:
+            Model response text (thinking blocks stripped).
+        """
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+
+        if self.is_cloud:
+            # OpenAI vision format: content is an array of parts
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {
+                        "url": f"data:image/png;base64,{image_base64}",
+                    }},
+                ],
+            })
+            resp = self._chat_openai(messages=messages, timeout=timeout)
+        else:
+            # Ollama multimodal format: images array on the message
+            messages.append({
+                "role": "user",
+                "content": prompt,
+                "images": [image_base64],
+            })
+            payload = {
+                "model": self.model,
+                "messages": messages,
+                "stream": False,
+                "think": False,
+                "keep_alive": -1,
+                "options": {"temperature": 0, "num_predict": 4096},
+            }
+            r = requests.post(
+                f"{self.base_url}/api/chat",
+                json=payload,
+                timeout=timeout,
+            )
+            r.raise_for_status()
+            resp = r.json()
+
+        raw = resp.get("message", {}).get("content", "")
+        return _THINK_RE.sub("", raw).strip()
+
     def is_available(self) -> bool:
         """Check if the translation backend is reachable."""
         if self.is_cloud:
@@ -823,16 +880,6 @@ class AIClient:
             return [m["name"] for m in data.get("models", [])]
         except (requests.RequestException, KeyError, ValueError, OSError):
             return []
-
-    def list_vision_models(self) -> list:
-        """Get list of vision-capable models from Ollama.
-
-        Filters installed models by known vision model keywords.
-        """
-        _VISION_KEYWORDS = ("vl", "vision", "llava", "minicpm-v", "bakllava")
-        all_models = self.list_models()
-        return [m for m in all_models
-                if any(kw in m.lower() for kw in _VISION_KEYWORDS)]
 
     def translate_name(self, text: str, hint: str = "") -> str:
         """Translate a short string (name, title, profile) with glossary
