@@ -1022,7 +1022,13 @@ class RPGMakerMVParser:
         backup_dir = data_dir + "_original"
         if os.path.isdir(backup_dir):
             return  # Already backed up
-        shutil.copytree(data_dir, backup_dir)
+        try:
+            shutil.copytree(data_dir, backup_dir)
+        except OSError as exc:
+            raise OSError(
+                f"Could not back up {data_dir} — is the game running?\n\n"
+                f"Close the game and try again.\n({exc})"
+            ) from exc
 
     @staticmethod
     def _swap_gamefont(project_dir: str):
