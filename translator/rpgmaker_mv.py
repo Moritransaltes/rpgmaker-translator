@@ -445,7 +445,10 @@ class RPGMakerMVParser:
         """
         data_dir = self._find_data_dir(project_dir)
         if not data_dir:
-            return
+            raise FileNotFoundError(
+                f"Could not find data/ folder in {project_dir}.\n"
+                "Make sure this is a valid RPG Maker MV/MZ project."
+            )
 
         # Back up originals on first export
         self._backup_data_dir(data_dir)
