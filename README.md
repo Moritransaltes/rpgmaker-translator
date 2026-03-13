@@ -5,7 +5,7 @@
 <h1 align="center">RPG Maker Translator</h1>
 
 <p align="center">
-Translate RPG Maker MV/MZ and TyranoScript* games from Japanese to English.<br>
+Translate RPG Maker MV/MZ/VX Ace, TyranoScript, and SRPG Studio games from Japanese to English.<br>
 <b>Local LLM</b> (Ollama + Qwen 3.5 — free, private, no content filters) or <b>Cloud API</b> (OpenAI, Gemini, DeepSeek, Anthropic — experimental, pay-per-token).<br>
 Auto-tuned to maximize GPU speed. Pronoun-aware. Glossary-driven. Batch translation with resume.<br>
 Designed by a human, coded with <a href="https://claude.ai/code">Claude Code</a>.
@@ -21,7 +21,7 @@ Cloud API engine ported from <a href="https://github.com/dazedanon/DazedMTLTool"
 
 ## At a Glance
 
-Open a game folder. Hit Batch Translate. Get a playable English translation. RPG Maker games open directly in the editor for QA — no copying files, no manual setup.
+Open a game folder. Hit Batch Translate. Get a playable English translation. Supports RPG Maker MV/MZ/VX Ace, TyranoScript, and SRPG Studio — engine auto-detected on open.
 
 | | |
 |---|---|
@@ -91,12 +91,12 @@ python main.py
 
 ### 3. Translate
 
-1. **Project > Open Project** — point to your game folder
-2. **Assign actor genders** in the popup dialog
+1. **Project > Open Project** — point to your game folder (any supported engine auto-detected)
+2. **Assign actor genders** in the popup dialog (RPG Maker engines)
 3. **Batch DB** (`Ctrl+D`) — translate names/items/skills first
 4. **Batch Dialogue** (`Ctrl+T`) — translate dialogue with auto-glossary
 5. **Game > Apply Translation** (`Ctrl+E`) — write back to game files
-6. **Game > Open in RPG Maker** (`Ctrl+R`) — QA in the visual editor
+6. **Game > Open in RPG Maker** (`Ctrl+R`) — QA in the visual editor (MV/MZ only)
 
 ---
 
@@ -211,16 +211,23 @@ Project entries override general entries for the same JP term.
 
 ## Supported Formats & Languages
 
-### Game Formats
+### Game Engines
 
-| Format | Status |
-|---|---|
-| RPG Maker MV (.json) | Supported |
-| RPG Maker MZ (.json) | Supported |
-| TyranoScript (.ks) | Testing* |
-| RPG Maker VX Ace (.rvdata2) | Planned |
+| Engine | Files | Status |
+|---|---|---|
+| RPG Maker MV | .json | Supported |
+| RPG Maker MZ | .json | Supported |
+| RPG Maker VX Ace | .rvdata2 | Supported |
+| TyranoScript | .ks | Supported |
+| SRPG Studio | data.dts | Supported |
 
-> **\*TyranoScript support** is functional but still being tested. Features include: auto-extraction from NW.js executables, `[r]`/`[p]`/`[emb]` tag preservation via `«CODE»` placeholders, self-calibrating word wrap from original JP line lengths, VN-specific LLM prompt, and a dedicated post-processor for tag leak cleanup. Open a `.exe` or extracted game folder and it auto-detects the engine.
+All engines auto-detect when you open a game folder — no manual configuration needed.
+
+> **TyranoScript** — Auto-extraction from NW.js executables, `[r]`/`[p]`/`[emb]` tag preservation via `«CODE»` placeholders, self-calibrating word wrap from original JP line lengths, VN-specific LLM prompt, and a dedicated post-processor for tag leak cleanup.
+
+> **RPG Maker VX Ace** — Parses Ruby Marshal binary files via `rubymarshal`. Full database + event support (actors, items, skills, maps, common events, troops). Same two-stage DB → Dialogue workflow as MV/MZ.
+
+> **SRPG Studio** — Decrypts and parses `data.dts` (AES-128-CBC encrypted, zlib-compressed XML). Translates all text content and exports directly back to the encrypted format.
 
 ### Target Languages
 
@@ -250,6 +257,8 @@ Project entries override general entries for the same JP term.
 - **[DazedMTLTool](https://github.com/dazedanon/DazedMTLTool)** (MIT) — Cloud API engine, batch translation approach, prompt presets, and pricing config ported from DazedMTL. DazedMTL Mode mirrors their exact translation pipeline.
 - **[Sugoi Toolkit](https://huggingface.co/sugoitoolkit)** — Fine-tuned JP→EN translation models optimized for visual novels and RPGs.
 - **[Ollama](https://ollama.com/)** — Local LLM inference server that makes GPU translation free and private.
+- **[rubymarshal](https://github.com/d9pouces/RubyMarshal)** — Ruby Marshal binary format parser, used for RPG Maker VX Ace `.rvdata2` files.
+- **[pycryptodome](https://www.pycryptodome.org/)** — AES decryption for SRPG Studio `data.dts` files.
 
 ---
 
