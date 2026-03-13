@@ -88,9 +88,14 @@ class TranslationProject:
             "glossary": self.glossary,
             "actor_genders": self.actor_genders,
         }
-        os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        dir_name = os.path.dirname(path) if os.path.dirname(path) else "."
+        os.makedirs(dir_name, exist_ok=True)
+        # Atomic write: write to temp file then rename to prevent corruption
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        # os.replace is atomic on the same filesystem
+        os.replace(tmp_path, path)
 
     @classmethod
     def load_state(cls, path: str) -> "TranslationProject":
