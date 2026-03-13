@@ -567,11 +567,15 @@ class TranslationWizard(QDialog):
                 return
 
             project_path = self.mw.project.project_path
-            is_srpg = getattr(self.mw, '_project_type', '') == 'srpgstudio'
+            ptype = getattr(self.mw, '_project_type', '')
 
-            if is_srpg:
+            if ptype == 'srpgstudio':
                 from ..srpgstudio import SRPGStudioParser
                 parser = SRPGStudioParser()
+                parser.save_project(project_path, translated)
+            elif ptype == 'rpgmaker_ace':
+                from ..rpgmaker_ace import RPGMakerAceParser
+                parser = RPGMakerAceParser()
                 parser.save_project(project_path, translated)
             else:
                 import re
@@ -617,9 +621,9 @@ class TranslationWizard(QDialog):
         try:
             import os
 
-            # SRPG Studio doesn't support patch zip (single binary archive)
-            if getattr(self.mw, '_project_type', '') == 'srpgstudio':
-                self.detail_label.setText("Patch zip not available for SRPG Studio.")
+            # SRPG Studio / VX Ace don't support patch zip (binary archives)
+            if getattr(self.mw, '_project_type', '') in ('srpgstudio', 'rpgmaker_ace'):
+                self.detail_label.setText("Patch zip not available for this engine.")
                 self.progress_bar.setRange(0, 1)
                 self.progress_bar.setValue(1)
                 self._step_index += 1

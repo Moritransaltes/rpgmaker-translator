@@ -27,7 +27,7 @@ class TranslationEntry:
 class TranslationProject:
     """Holds all translation entries for an RPG Maker project."""
     project_path: str = ""
-    project_type: str = "rpgmaker"  # "rpgmaker" | "tyranoscript" | "srpgstudio"
+    project_type: str = "rpgmaker"  # "rpgmaker" | "rpgmaker_ace" | "tyranoscript" | "srpgstudio"
     entries: list = field(default_factory=list)
     glossary: dict = field(default_factory=dict)  # JP -> EN forced mappings
     actor_genders: dict = field(default_factory=dict)  # actor_id -> gender
