@@ -319,8 +319,11 @@ class RPGMakerMVParser:
         if not os.path.exists(filepath):
             return []
 
-        with open(filepath, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return []
 
         if not isinstance(data, list):
             return []
