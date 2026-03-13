@@ -934,6 +934,10 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
+        # Stop any running batch translation first
+        if self.engine._workers:
+            self.engine.cancel()
+
         # Reset project
         self.project = TranslationProject()
         self._sync_project_type("rpgmaker")
