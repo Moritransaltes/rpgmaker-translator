@@ -736,7 +736,16 @@ class AIClient:
                 json=payload,
                 timeout=timeout,
             )
-            r.raise_for_status()
+            if r.status_code != 200:
+                body = r.text[:200]
+                if r.status_code == 404:
+                    raise ConnectionError(
+                        f"Model '{self.model}' not found. "
+                        f"Run: ollama pull {self.model}"
+                    )
+                raise ConnectionError(
+                    f"Ollama vision error {r.status_code}: {body}"
+                )
             resp = r.json()
 
         raw = resp.get("message", {}).get("content", "")
