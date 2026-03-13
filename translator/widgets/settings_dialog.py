@@ -343,6 +343,7 @@ class SettingsDialog(QDialog):
         self._orig_provider = self.client.provider
         self._orig_workers = self.engine.num_workers if self.engine else 2
         self._orig_language = self.client.target_language
+        self._orig_system_prompt = self.client.system_prompt
         self._suppress_preset_change = False  # Flag to avoid feedback loops
         self._loading = True  # Suppress auto-set of batch/workers during load
 
@@ -725,10 +726,12 @@ class SettingsDialog(QDialog):
     # ── Save / Cancel ────────────────────────────────────────────────
 
     def reject(self):
-        """Revert any URL/model/provider changes made during the dialog."""
+        """Revert all client changes made during the dialog."""
         self.client.base_url = self._orig_url
         self.client.model = self._orig_model
         self.client.provider = self._orig_provider
+        self.client.target_language = self._orig_language
+        self.client.system_prompt = self._orig_system_prompt
         super().reject()
 
     def _save(self):
