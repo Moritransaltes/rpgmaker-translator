@@ -327,6 +327,11 @@ class TranslationProject:
         import_translations() on the target project.
         """
         with zipfile.ZipFile(zip_path, "r") as zf:
+            if "patch.json" not in zf.namelist():
+                raise ValueError(
+                    "This zip file is not a translation patch.\n"
+                    "Expected patch.json inside the archive."
+                )
             patch_raw = zf.read("patch.json")
             data = json.loads(patch_raw)
 
