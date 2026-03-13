@@ -137,10 +137,10 @@ class TranslationTableModel(QAbstractTableModel):
         entry = self._entries[row]
         new_text = str(value)
         entry.translation = new_text
-        if new_text.strip():
-            entry.status = "translated"
-        else:
+        if not new_text.strip():
             entry.status = "untranslated"
+        elif entry.status not in ("translated", "reviewed"):
+            entry.status = "translated"
         self._last_inline_edit_row = row
         # Emit change for the entire row (status icon + colors changed too)
         self.dataChanged.emit(
@@ -1204,10 +1204,10 @@ class TranslationTable(QWidget):
         new_text = self.trans_editor.toPlainText()
         entry.translation = new_text
 
-        if new_text.strip():
-            entry.status = "translated"
-        else:
+        if not new_text.strip():
             entry.status = "untranslated"
+        elif entry.status not in ("translated", "reviewed"):
+            entry.status = "translated"
 
         # Propagate to duplicates if master view is on
         if self.master_check.isChecked():
