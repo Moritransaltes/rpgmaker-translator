@@ -468,7 +468,9 @@ class RPGMakerMVParser:
             if not (e.translation and e.status in ("translated", "reviewed")):
                 continue
             if e.field == "speaker_name":
-                global_speakers[e.original] = e.translation
+                name = self._sanitize_speaker_name(e.translation, e.original)
+                if name:
+                    global_speakers[e.original] = name
             else:
                 by_file.setdefault(e.file, []).append(e)
 
@@ -539,7 +541,9 @@ class RPGMakerMVParser:
             if not (e.translation and e.status in ("translated", "reviewed")):
                 continue
             if e.field == "speaker_name":
-                global_speakers[e.original] = e.translation
+                name = self._sanitize_speaker_name(e.translation, e.original)
+                if name:
+                    global_speakers[e.original] = name
             else:
                 by_file.setdefault(e.file, []).append(e)
 
@@ -2044,6 +2048,34 @@ class RPGMakerMVParser:
                         text_map[pc] = dc
 
     # ── Private: apply translation back to JSON ────────────────────────
+
+    @staticmethod
+    def _sanitize_speaker_name(translated: str, original: str) -> str:
+        """Clean up a speaker name translation, rejecting garbage.
+
+        LLM sometimes returns full dialogue text instead of a short name.
+        This strips newlines, quotes, and rejects excessively long strings
+        that would corrupt 101 header param[4] on export.
+
+        Returns the cleaned name, or empty string if unusable.
+        """
+        if not translated:
+            return ""
+        # Multiline is never a valid name — LLM returned dialogue
+        if "\n" in translated:
+            log.warning(
+                "Speaker name contains newline, keeping original: "
+                "%r -> %r", original, translated[:60])
+            return ""
+        translated = translated.strip().strip('"').strip("'").strip()
+        # Names longer than the original + generous margin are suspect.
+        # Real names rarely exceed 30 chars; allow up to 40 for safety.
+        if len(translated) > 40:
+            log.warning(
+                "Speaker translation too long (%d chars), keeping "
+                "original: %r -> %r", len(translated), original, translated)
+            return ""
+        return translated
 
     @staticmethod
     def _translate_namebox(namebox: str, speaker_lookup: dict) -> str:

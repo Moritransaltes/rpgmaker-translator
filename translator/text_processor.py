@@ -46,6 +46,16 @@ WORDWRAP_PLUGIN_JS = r"""/*:
 (function() {
     'use strict';
 
+    // ===== Auto-detect plugins that resize the message window =====
+    var scripts = (PluginManager._scripts || []);
+    var hasNRP = scripts.indexOf('NRP_MessageWindow') >= 0;
+    var hasMPP = scripts.indexOf('MPP_MessageEX') >= 0;
+    var hasDynamicWindow = hasNRP || hasMPP;
+
+    // Extra padding for decorative window skins (hearts, fancy frames)
+    // Only applied when a dynamic-resize plugin is detected
+    var DECO_PADDING = hasDynamicWindow ? 40 : 0;
+
     // ===== Text width measurement (strips escape codes) =====
     var ICON_RE = /\x1bI\[\d{1,4}\]/g;
     var ESCAPE_RE = /\x1b[A-Za-z{}\[\]$.|!><^]/g;
@@ -101,7 +111,23 @@ WORDWRAP_PLUGIN_JS = r"""/*:
 
     // ===== Wrap full text (handles existing newlines as paragraphs) =====
     function wrapText(win, text) {
-        var width = win.contents ? win.contents.width : 408;
+        // Try multiple sources for the drawable width:
+        // 1. contents.width (set after createContents)
+        // 2. innerWidth (MZ property)
+        // 3. window.width minus padding (works with NRP_MessageWindow)
+        var width;
+        var padding = (win.padding !== undefined) ? win.padding * 2 : 24;
+        if (win.innerWidth !== undefined && win.innerWidth > 0) {
+            width = win.innerWidth;
+        } else if (win.contents && win.contents.width > 0) {
+            width = win.contents.width;
+        } else if (win.width > 0) {
+            width = win.width - padding;
+        } else {
+            width = 408;
+        }
+        // Extra padding for decorative box borders (hearts, frames, etc.)
+        if (DECO_PADDING > 0) width -= DECO_PADDING;
         // Account for face graphic in Window_Message
         if (win.newLineX) {
             var dummy = { y: 0, height: 0 };
@@ -122,7 +148,22 @@ WORDWRAP_PLUGIN_JS = r"""/*:
     }
 
     // ===== convertEscapeCharacters: detect <WordWrap>, strip newlines =====
-    function hookConvertEsc(original) {
+    // Window_Message: always wrap (tag optional)
+    // Window_Help: only wrap when <WordWrap> tag present
+    function hookConvertEscAlways(original) {
+        return function(text) {
+            text = text.replace(/<wordwrap>/gi, '');
+            this._twrWordWrap = true;
+            text = original.call(this, text);
+            // Merge all lines into one paragraph (we re-wrap later)
+            text = text.replace(/[\n\r]+/g, ' ');
+            // Honour explicit <br> tags as hard line breaks
+            text = text.replace(/<(?:br|line break)>/gi, '\n');
+            return text;
+        };
+    }
+
+    function hookConvertEscTagged(original) {
         return function(text) {
             this._twrWordWrap = false;
             if (/<wordwrap>/i.test(text)) {
@@ -131,9 +172,7 @@ WORDWRAP_PLUGIN_JS = r"""/*:
             }
             text = original.call(this, text);
             if (this._twrWordWrap) {
-                // Merge all lines into one paragraph (we re-wrap later)
                 text = text.replace(/[\n\r]+/g, ' ');
-                // Honour explicit <br> tags as hard line breaks
                 text = text.replace(/<(?:br|line break)>/gi, '\n');
             }
             return text;
@@ -141,12 +180,12 @@ WORDWRAP_PLUGIN_JS = r"""/*:
     }
 
     var _WM_convertEsc = Window_Message.prototype.convertEscapeCharacters;
-    Window_Message.prototype.convertEscapeCharacters = hookConvertEsc(_WM_convertEsc);
+    Window_Message.prototype.convertEscapeCharacters = hookConvertEscAlways(_WM_convertEsc);
 
     var _WH_convertEsc =
         Window_Help.prototype.convertEscapeCharacters ||
         Window_Base.prototype.convertEscapeCharacters;
-    Window_Help.prototype.convertEscapeCharacters = hookConvertEsc(_WH_convertEsc);
+    Window_Help.prototype.convertEscapeCharacters = hookConvertEscTagged(_WH_convertEsc);
 
     // ===== createTextState: pre-process wrap BEFORE rendering =====
     function hookCreateTextState(original) {
@@ -159,14 +198,29 @@ WORDWRAP_PLUGIN_JS = r"""/*:
         };
     }
 
-    var _WM_createTS = Window_Message.prototype.createTextState;
-    Window_Message.prototype.createTextState = hookCreateTextState(_WM_createTS);
-
-    // Window_Help may inherit createTextState from Window_Base
+    // Window_Help uses createTextState hook (no NRP timing issue)
     var _WH_createTS =
         Window_Help.prototype.createTextState ||
         Window_Base.prototype.createTextState;
     Window_Help.prototype.createTextState = hookCreateTextState(_WH_createTS);
+
+    // Window_Message: hook startMessage instead of createTextState
+    // so we wrap AFTER updatePlacement sets the final window size.
+    var _WM_startMessage = Window_Message.prototype.startMessage;
+    Window_Message.prototype.startMessage = function() {
+        // updatePlacement runs inside startMessage, setting final width
+        _WM_startMessage.call(this);
+        // Now re-wrap the textState with correct dimensions
+        if (this._twrWordWrap && this._textState && this._textState.text) {
+            this._textState.text = wrapText(this, this._textState.text);
+            // Reset drawing position to start
+            this._textState.index = 0;
+            this._textState.x = this.newLineX ? this.newLineX(this._textState) : 0;
+            this._textState.y = 0;
+            // Redraw contents with properly wrapped text
+            if (this.contents) this.contents.clear();
+        }
+    };
 
     // ===== processNewLine: handle face graphic offset + page break =====
     var _WM_processNewLine = Window_Message.prototype.processNewLine;
@@ -399,9 +453,9 @@ class TextProcessor:
         # Count original lines to know how many text boxes we have
         orig_line_count = len(original.split("\n"))
 
-        # If the game has a word wrap plugin (or we're injecting one), use tags
-        has_plugin = self.analyzer.has_wordwrap_plugin or self.analyzer.inject_wordwrap
-        if use_tag and has_plugin:
+        # If the game already has a word wrap plugin (VisuMZ, YEP, etc.), use tags
+        # Our injected plugin wraps at render time — no tags needed, use manual wrap
+        if use_tag and self.analyzer.has_wordwrap_plugin and not self.analyzer.inject_wordwrap:
             return self._apply_plugin_wordwrap(translation, orig_line_count,
                                                has_face=has_face)
 
