@@ -5,7 +5,7 @@
 <h1 align="center">RPG Maker Translator</h1>
 
 <p align="center">
-Translate RPG Maker MV/MZ/VX Ace/2000/2003, Ren'Py, TyranoScript, and SRPG Studio games using local or cloud LLMs.<br>
+Translate RPG Maker MV/MZ/VX Ace/2000/2003, Ren'Py, TyranoScript, SRPG Studio, and Crowd engine games using local or cloud LLMs.<br>
 <b>Local LLM</b> (Ollama + Qwen 3.5 — free, private, no content filters) or <b>Cloud API</b> (OpenAI, Gemini, DeepSeek, Anthropic — experimental, pay-per-token).<br>
 Auto-tuned to maximize GPU speed. Pronoun-aware. Glossary-driven. Batch translation with resume.<br>
 Per-engine settings, prompts, and model selection via the Engines tab.<br>
@@ -22,11 +22,11 @@ Cloud API engine ported from <a href="https://github.com/dazedanon/DazedMTLTool"
 
 ## At a Glance
 
-Open a game folder. Hit Batch Translate. Get a playable translation. Supports 7 engines — auto-detected on open.
+Open a game folder. Hit Batch Translate. Get a playable translation. Supports 8 engines — auto-detected on open.
 
 | | |
 |---|---|
-| **7 Game Engines** | RPG Maker MV, MZ, VX Ace, 2000/2003, Ren'Py, TyranoScript, SRPG Studio — all auto-detected |
+| **8 Game Engines** | RPG Maker MV, MZ, VX Ace, 2000/2003, Ren'Py, TyranoScript, SRPG Studio, Crowd — all auto-detected |
 | **Local LLM (free)** | Ollama + [Qwen 3.5:9b](https://ollama.com/library/qwen3.5) on your GPU — auto-tuned for your hardware, no API keys, no content filters, no account bans. Your data never leaves your PC |
 | **Cloud API (experimental)** | OpenAI, Gemini, DeepSeek, Anthropic — DazedMTL-compatible batch mode with live cost tracking |
 | **Per-engine settings** | Each engine has its own context, batch size, workers, word wrap, model, and system prompt — configurable in the Engines tab |
@@ -230,6 +230,7 @@ Per-engine overrides for Context, Batch Size, Workers, Word Wrap, and Model. A *
 | Ren'Py | .rpy | Supported |
 | TyranoScript | .ks | Supported |
 | SRPG Studio | data.dts | Supported |
+| Crowd | .sce | Supported |
 
 All engines auto-detect when you open a game folder — no manual configuration needed.
 
@@ -244,6 +245,8 @@ All engines auto-detect when you open a game folder — no manual configuration 
 > **TyranoScript** — Auto-extraction from NW.js executables, `[r]`/`[p]`/`[emb]` tag preservation via `«CODE»` placeholders, self-calibrating word wrap from original JP line lengths, VN-specific LLM prompt, and a dedicated post-processor for tag leak cleanup.
 
 > **SRPG Studio** — Decrypts and parses `data.dts` (AES-128-CBC encrypted, zlib-compressed XML). Translates all text content and exports directly back to the encrypted format.
+
+> **Crowd** — Reverse-engineered XOR cipher for `.sce` encrypted script files (X-Change series, late 1990s–2000s). Auto-extracts the decryption key from the game exe — no manual configuration. Parses dialogue with 62+ speakers, narration, scene titles, and sound effects. Backup to `sce_original/`, idempotent re-export with re-encryption.
 
 ### Target Languages
 

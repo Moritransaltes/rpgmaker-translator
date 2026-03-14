@@ -342,6 +342,35 @@ class SRPGStudioHandler(EngineHandler):
                 f"Original file backed up as data_original.dts.")
 
 
+# ── Crowd ───────────────────────────────────────────────────
+
+class CrowdHandler(EngineHandler):
+    key = "crowd"
+    display_name = "Crowd"
+    backup_description = "sce_original/"
+
+    has_speaker_processing = True
+    system_prompt_key = "crowd"
+
+    pipeline_steps = [
+        ("dialogue", "Translate"),
+        ("cleanup", "Clean Up"),
+        ("export", "Export"),
+    ]
+
+    @staticmethod
+    def detect(path: str) -> bool:
+        from .crowd import CrowdParser
+        return CrowdParser.is_crowd_project(path)
+
+    def get_export_label(self):
+        return "Export translations to .sce file"
+
+    def get_export_message(self, count: int) -> str:
+        return (f"Exported {count} translations to .sce file.\n"
+                f"Original file backed up in sce_original/.")
+
+
 # ── Ren'Py ──────────────────────────────────────────────────
 
 class RenPyHandler(EngineHandler):
@@ -375,13 +404,56 @@ class RenPyHandler(EngineHandler):
                 f"Original files backed up in game_original/.")
 
 
+# ── Wolf RPG ──────────────────────────────────────────────────
+
+class WolfRPGHandler(EngineHandler):
+    key = "wolfrpg"
+    display_name = "Wolf RPG Editor"
+    backup_description = "Data_original/ (or BasicData_original/)"
+
+    has_db_split = True
+    has_wordwrap = True
+    system_prompt_key = "wolfrpg"
+
+    default_wordwrap_chars = 50     # ~50 chars/line in Wolf RPG message boxes
+
+    pipeline_steps = [
+        ("db", "Translate DB"),
+        ("dialogue", "Translate Dialogue"),
+        ("cleanup", "Clean Up"),
+        ("wordwrap", "Word Wrap"),
+        ("export", "Export"),
+    ]
+
+    db_files = {"Database/DataBase", "Database/CDataBase", "Database/SysDatabase"}
+
+    auto_glossary_fields = {
+        "Database/DataBase": ("name",),
+        "Database/CDataBase": ("name",),
+    }
+
+    @staticmethod
+    def detect(path: str) -> bool:
+        from .wolfrpg import WolfRPGParser
+        return WolfRPGParser.detect(path)
+
+    def get_export_label(self):
+        return "Export translations to Wolf RPG data files"
+
+    def get_export_message(self, count: int) -> str:
+        return (f"Exported {count} translations to Wolf RPG data files.\n"
+                f"Data.wolf renamed to .bak — game reads from Data/ folder.")
+
+
 # ── Registry ─────────────────────────────────────────────────
 # Detection order matters: more specific engines first (RM2K before MV/MZ)
 
 ENGINE_REGISTRY: list[type[EngineHandler]] = [
+    CrowdHandler,        # Crowd engine (.sce files)
     RenPyHandler,
     TyranoScriptHandler,
     SRPGStudioHandler,
+    WolfRPGHandler,
     RPGMakerAceHandler,
     RPGMaker2KHandler,
     RPGMakerMZHandler,   # MZ before MV (MZ detection is more specific)

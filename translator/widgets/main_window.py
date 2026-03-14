@@ -177,11 +177,13 @@ from ..srpgstudio import SRPGStudioParser
 from ..rpgmaker_ace import RPGMakerAceParser
 from ..rpgmaker_2k import RPGMaker2KParser
 from ..renpy import RenPyParser
+from ..wolfrpg import WolfRPGParser
+from ..crowd import CrowdParser
 from ..engine_handler import (
     EngineHandler, detect_engine, get_handler_by_key,
     RPGMakerMVHandler, RPGMakerMZHandler, RPGMakerAceHandler,
     RPGMaker2KHandler, TyranoScriptHandler, SRPGStudioHandler,
-    RenPyHandler,
+    RenPyHandler, WolfRPGHandler, CrowdHandler,
 )
 from ..project_model import TranslationProject
 from ..translation_engine import TranslationEngine
@@ -229,6 +231,8 @@ class MainWindow(QMainWindow):
         self.ace_parser = RPGMakerAceParser()
         self.rm2k_parser = RPGMaker2KParser()
         self.renpy_parser = RenPyParser()
+        self.wolf_parser = WolfRPGParser()
+        self.crowd_parser = CrowdParser()
         # Engine handler registry — maps key -> handler with parser
         self._engine_handlers = {
             "rpgmaker_mv": RPGMakerMVHandler(self.parser),
@@ -238,6 +242,8 @@ class MainWindow(QMainWindow):
             "tyranoscript": TyranoScriptHandler(self.tyrano_parser),
             "srpgstudio": SRPGStudioHandler(self.srpg_parser),
             "renpy": RenPyHandler(self.renpy_parser),
+            "wolfrpg": WolfRPGHandler(self.wolf_parser),
+            "crowd": CrowdHandler(self.crowd_parser),
         }
         self.handler: EngineHandler = self._engine_handlers["rpgmaker_mv"]
         self._engine_overrides: dict[str, dict] = {}  # per-engine setting overrides
@@ -805,11 +811,32 @@ class MainWindow(QMainWindow):
         else:
             self._project_type = "rpgmaker_mv"
         self._sync_project_type(self._project_type)
+
+        # Wolf RPG may need to unpack Data.wolf (can take 10-30s for large archives)
+        if self._project_type == "wolfrpg":
+            from pathlib import Path as _Path
+            wolf_file = _Path(path) / 'Data.wolf'
+            data_dir = _Path(path) / 'Data'
+            needs_unpack = wolf_file.is_file() and not (
+                data_dir.is_dir() and (data_dir / 'MapData').is_dir())
+            if needs_unpack:
+                progress = QProgressDialog(
+                    "Unpacking Data.wolf...", None, 0, 0, self)
+                progress.setWindowTitle("Unpacking Wolf RPG Data")
+                progress.setMinimumDuration(0)
+                progress.setCancelButton(None)
+                progress.setValue(0)
+                QApplication.processEvents()
+
         try:
             entries = self.handler.load_project(path)
         except FileNotFoundError as e:
             QMessageBox.warning(self, "Error", str(e))
             return
+        finally:
+            # Close progress dialog if it was opened
+            if self._project_type == "wolfrpg" and 'progress' in locals():
+                progress.close()
 
         if not entries:
             QMessageBox.warning(
@@ -819,6 +846,7 @@ class MainWindow(QMainWindow):
                 "  - RPG Maker MV/MZ (data/*.json)\n"
                 "  - RPG Maker VX Ace (Data/*.rvdata2)\n"
                 "  - RPG Maker 2000/2003 (RPG_RT.ldb)\n"
+                "  - Wolf RPG Editor (Data.wolf / Game.exe)\n"
                 "  - TyranoScript (data/scenario/*.ks)\n"
                 "  - SRPG Studio (data.dts)",
             )
