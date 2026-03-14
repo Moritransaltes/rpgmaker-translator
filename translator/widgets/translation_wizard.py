@@ -105,11 +105,11 @@ class TranslationWizard(QDialog):
         steps_group = QGroupBox("Translation Pipeline")
         steps_layout = QVBoxLayout(steps_group)
 
-        # Detect engine type for step customization
-        ptype = getattr(self.mw, '_project_type', '')
-        has_db_split = ptype in ('rpgmaker', 'rpgmaker_ace', 'rpgmaker_2k')
-        has_wordwrap = ptype in ('rpgmaker', 'rpgmaker_ace', 'tyranoscript', 'srpgstudio')
-        has_patch_zip = ptype in ('rpgmaker',)  # Only MV/MZ JSON supports patch zips
+        # Get engine capabilities from handler
+        handler = self.mw.handler
+        has_db_split = handler.has_db_split
+        has_wordwrap = handler.has_wordwrap
+        has_patch_zip = handler.has_patch_zip
 
         self.cb_db = QCheckBox("1. Translate database (names, items, skills, terms)")
         self.cb_dialogue = QCheckBox("2. Translate dialogue and events")
@@ -124,8 +124,8 @@ class TranslationWizard(QDialog):
 
         if has_db_split:
             # RPG Maker MV/MZ, VX Ace, RM2K: separate DB and dialogue steps
-            db_entries = [e for e in entries if e.file in self.mw._DB_FILES]
-            dialogue_entries = [e for e in entries if e.file not in self.mw._DB_FILES]
+            db_entries = [e for e in entries if e.file in handler.db_files]
+            dialogue_entries = [e for e in entries if e.file not in handler.db_files]
             has_db_untranslated = any(e.status == "untranslated" for e in db_entries)
             has_dialogue_untranslated = any(e.status == "untranslated" for e in dialogue_entries)
 
@@ -156,22 +156,16 @@ class TranslationWizard(QDialog):
                 self.cb_dialogue.setText("1. Translate all entries (all done)")
             self.cb_retranslate.setChecked(has_untranslated)
 
-        # Engine-specific labels
-        export_labels = {
-            'srpgstudio': "Export translations to data.dts",
-            'tyranoscript': "Export translations to .ks files",
-            'rpgmaker_ace': "Export translations to .rvdata2 files",
-            'rpgmaker_2k': "Export translations to LCF files",
-        }
-        if ptype in export_labels:
-            self.cb_export.setText(f"{export_labels[ptype]}")
+        # Engine-specific labels from handler
+        export_label = handler.get_export_label()
+        if export_label:
+            self.cb_export.setText(export_label)
 
         # Word wrap
         if has_wordwrap:
-            if ptype == 'srpgstudio':
-                self.cb_wordwrap.setText("Apply word wrap (~50 chars/line)")
-            elif ptype == 'tyranoscript':
-                self.cb_wordwrap.setText("Apply word wrap (visual novel lines)")
+            ww_label = handler.get_wordwrap_label()
+            if ww_label:
+                self.cb_wordwrap.setText(ww_label)
             self.cb_wordwrap.setChecked(True)
         else:
             self.cb_wordwrap.setVisible(False)
@@ -338,7 +332,7 @@ class TranslationWizard(QDialog):
             if step == WizardStep.TRANSLATE_DB:
                 self.detail_label.setText(f"Database: {done}/{total} ({pct}%)")
             elif step == WizardStep.TRANSLATE_DIALOGUE:
-                lbl = "Translating" if getattr(self.mw, '_project_type', '') in ('srpgstudio', 'tyranoscript') else "Dialogue"
+                lbl = "Translating" if not self.mw.handler.has_db_split else "Dialogue"
                 self.detail_label.setText(f"{lbl}: {done}/{total} ({pct}%)")
             elif step == WizardStep.RETRANSLATE:
                 self.detail_label.setText(f"Fixing: {done}/{total} ({pct}%)")
@@ -366,8 +360,7 @@ class TranslationWizard(QDialog):
             QTimer.singleShot(200, lambda: self._start_batch_step("db"))
 
         elif step == WizardStep.TRANSLATE_DIALOGUE:
-            ptype = getattr(self.mw, '_project_type', '')
-            no_db_split = ptype in ('srpgstudio', 'tyranoscript')
+            no_db_split = not self.mw.handler.has_db_split
             if no_db_split:
                 self.step_label.setText(
                     f"Step {step_num}/{total_steps}: Translating all entries...")
@@ -461,7 +454,7 @@ class TranslationWizard(QDialog):
         step = self._current_step
         if step == WizardStep.TRANSLATE_DB:
             db_count = sum(1 for e in self.mw.project.entries
-                           if e.file in self.mw._DB_FILES
+                           if e.file in self.mw.handler.db_files
                            and e.status in ("translated", "reviewed"))
             self.detail_label.setText(f"Done — {db_count} database entries translated.")
         elif step == WizardStep.TRANSLATE_DIALOGUE:
@@ -535,9 +528,9 @@ class TranslationWizard(QDialog):
 
     def _run_wordwrap(self):
         """Apply word wrap (synchronous)."""
-        is_srpg = getattr(self.mw, '_project_type', '') == 'srpgstudio'
+        ptype = getattr(self.mw, '_project_type', '')
 
-        if is_srpg:
+        if ptype == 'srpgstudio':
             count = 0
             for entry in self.mw.project.entries:
                 if not entry.translation or entry.status not in ("translated", "reviewed"):
@@ -590,30 +583,11 @@ class TranslationWizard(QDialog):
                 return
 
             project_path = self.mw.project.project_path
-            ptype = getattr(self.mw, '_project_type', '')
+            handler = self.mw.handler
 
-            if ptype == 'srpgstudio':
-                from ..srpgstudio import SRPGStudioParser
-                parser = SRPGStudioParser()
-                parser.save_project(project_path, translated)
-            elif ptype == 'rpgmaker_ace':
-                from ..rpgmaker_ace import RPGMakerAceParser
-                parser = RPGMakerAceParser()
-                parser.save_project(project_path, translated)
-            elif ptype == 'rpgmaker_2k':
-                from ..rpgmaker_2k import RPGMaker2KParser
-                parser = RPGMaker2KParser()
-                parser.save_project(project_path, translated)
-            elif ptype == 'tyranoscript':
-                from ..tyranoscript import TyranoScriptParser
-                parser = TyranoScriptParser()
-                parser.save_project(project_path, translated)
-            else:
+            # Strip WordWrap tags for MV/MZ if no plugin and not injecting
+            if handler.has_plugin_system:
                 import re
-                from ..rpgmaker_mv import RPGMakerMVParser
-                parser = RPGMakerMVParser()
-
-                # Strip WordWrap tags if no plugin and not injecting
                 inject_ww = getattr(self.mw, '_inject_wordwrap', False)
                 has_plugin = (self.mw.plugin_analyzer.has_wordwrap_plugin
                               if self.mw.plugin_analyzer else False)
@@ -623,20 +597,31 @@ class TranslationWizard(QDialog):
                             e.translation = re.sub(
                                 r'<WordWrap>', '', e.translation, flags=re.IGNORECASE)
 
-                parser.save_project(project_path, translated)
+            handler.save_project(project_path, translated)
 
+            # MV/MZ-specific: inject word wrap plugin + disable splash
+            if handler.has_plugin_system:
+                inject_ww = getattr(self.mw, '_inject_wordwrap', False)
                 if inject_ww:
                     chars = getattr(self.mw, '_chars_per_line', 0)
-                    parser.inject_wordwrap_plugin(project_path, max_chars=chars)
+                    handler.parser.inject_wordwrap_plugin(project_path, max_chars=chars)
 
                 disable_splash = getattr(self.mw, '_disable_splash', False)
                 if disable_splash:
-                    parser.disable_splash_plugin(project_path)
+                    handler.parser.disable_splash_plugin(project_path)
+
+            # RM2K/2K3: auto-copy EasyRPG Player
+            easyrpg_note = ""
+            if handler.key == "rpgmaker_2k":
+                easyrpg_note = self.mw._ensure_easyrpg_player(project_path)
 
             self.mw._autosave()
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(1)
-            self.detail_label.setText(f"Done — {len(translated)} entries exported to game.")
+            msg = f"Done — {len(translated)} entries exported to game."
+            if easyrpg_note:
+                msg += f"\n{easyrpg_note}"
+            self.detail_label.setText(msg)
 
         except Exception as exc:
             log.exception("Export failed in wizard")
@@ -653,7 +638,7 @@ class TranslationWizard(QDialog):
             import os
 
             # SRPG Studio / VX Ace don't support patch zip (binary archives)
-            if getattr(self.mw, '_project_type', '') in ('srpgstudio', 'rpgmaker_ace', 'rpgmaker_2k'):
+            if not self.mw.handler.has_patch_zip:
                 self.detail_label.setText("Patch zip not available for this engine.")
                 self.progress_bar.setRange(0, 1)
                 self.progress_bar.setValue(1)

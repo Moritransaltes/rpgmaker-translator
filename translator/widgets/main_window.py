@@ -176,6 +176,11 @@ from ..tyranoscript import TyranoScriptParser
 from ..srpgstudio import SRPGStudioParser
 from ..rpgmaker_ace import RPGMakerAceParser
 from ..rpgmaker_2k import RPGMaker2KParser
+from ..engine_handler import (
+    EngineHandler, detect_engine, get_handler_by_key,
+    RPGMakerMVHandler, RPGMakerMZHandler, RPGMakerAceHandler,
+    RPGMaker2KHandler, TyranoScriptHandler, SRPGStudioHandler,
+)
 from ..project_model import TranslationProject
 from ..translation_engine import TranslationEngine
 from ..text_processor import PluginAnalyzer, TextProcessor
@@ -196,42 +201,6 @@ from .pipeline_bar import PipelineBar
 class MainWindow(QMainWindow):
     """Main application window."""
 
-    # Files considered "DB" for stage-1 batch (translate names first, QA, then dialogue)
-    _DB_FILES = {
-        "Actors.json", "Classes.json", "Items.json", "Weapons.json",
-        "Armors.json", "Skills.json", "States.json", "Enemies.json",
-        "System.json",
-        # VX Ace equivalents
-        "Actors.rvdata2", "Classes.rvdata2", "Items.rvdata2", "Weapons.rvdata2",
-        "Armors.rvdata2", "Skills.rvdata2", "States.rvdata2", "Enemies.rvdata2",
-        "System.rvdata2",
-        # RM2K/2K3 — all DB entries are in RPG_RT.ldb
-        "RPG_RT.ldb",
-    }
-
-    # DB fields whose translated values should be auto-added to glossary
-    # so the LLM uses consistent names when they appear in dialogue.
-    _AUTO_GLOSSARY_FIELDS = {
-        "Actors.json": ("name", "nickname"),
-        "Classes.json": ("name",),
-        "Items.json": ("name",),
-        "Weapons.json": ("name",),
-        "Armors.json": ("name",),
-        "Skills.json": ("name",),
-        "Enemies.json": ("name",),
-        "States.json": ("name",),
-        # VX Ace equivalents
-        "Actors.rvdata2": ("name", "nickname"),
-        "Classes.rvdata2": ("name",),
-        "Items.rvdata2": ("name",),
-        "Weapons.rvdata2": ("name",),
-        "Armors.rvdata2": ("name",),
-        "Skills.rvdata2": ("name",),
-        "Enemies.rvdata2": ("name",),
-        "States.rvdata2": ("name",),
-        # RM2K/2K3
-        "RPG_RT.ldb": ("name", "nickname"),
-    }
     # Map displayNames are keyed by Map###.json — matched dynamically
     _AUTO_GLOSSARY_MAP_FIELD = "displayName"
     # Fields where each word should be capitalized (names, titles, places)
@@ -257,8 +226,19 @@ class MainWindow(QMainWindow):
         self.srpg_parser = SRPGStudioParser()
         self.ace_parser = RPGMakerAceParser()
         self.rm2k_parser = RPGMaker2KParser()
+        # Engine handler registry — maps key -> handler with parser
+        self._engine_handlers = {
+            "rpgmaker_mv": RPGMakerMVHandler(self.parser),
+            "rpgmaker_mz": RPGMakerMZHandler(self.parser),
+            "rpgmaker_ace": RPGMakerAceHandler(self.ace_parser),
+            "rpgmaker_2k": RPGMaker2KHandler(self.rm2k_parser),
+            "tyranoscript": TyranoScriptHandler(self.tyrano_parser),
+            "srpgstudio": SRPGStudioHandler(self.srpg_parser),
+        }
+        self.handler: EngineHandler = self._engine_handlers["rpgmaker_mv"]
+        self._engine_overrides: dict[str, dict] = {}  # per-engine setting overrides
         self.project = TranslationProject()
-        self._project_type = "rpgmaker"  # "rpgmaker" | "rpgmaker_ace" | "rpgmaker_2k" | "tyranoscript" | "srpgstudio"
+        self._project_type = "rpgmaker_mv"
         self.engine = TranslationEngine(self.client)
         self.plugin_analyzer = PluginAnalyzer()
         self.text_processor = TextProcessor(self.plugin_analyzer)
@@ -764,13 +744,11 @@ class MainWindow(QMainWindow):
                         f"{plugin_info}", 8000
                     )
                     folder = os.path.basename(path)
-                    engine = {"srpgstudio": "SRPG Studio", "tyranoscript": "TyranoScript"}.get(self._project_type, "RPG Maker")
-                    self.setWindowTitle(f"{engine} Translator \u2014 {folder}")
+                    self.setWindowTitle(f"{self.handler.display_name} Translator \u2014 {folder}")
                     # Offer wizard if there are untranslated entries
                     # Show choice BEFORE preloading so dialog appears instantly
                     wizard_chosen = False
-                    if (self._project_type != "tyranoscript"
-                            and self.project.translated_count < self.project.total):
+                    if self.project.translated_count < self.project.total:
                         wizard_chosen = self._show_wizard_choice()
                     # Preload model into VRAM (wizard handles its own Ollama calls)
                     if not wizard_chosen and not self.client.is_cloud:
@@ -817,27 +795,14 @@ class MainWindow(QMainWindow):
                         return
 
         # Detect project type and parse
-        is_tyrano = TyranoScriptParser.is_tyranoscript_project(path)
-        is_srpg = SRPGStudioParser.is_srpgstudio_project(path)
-        is_ace = RPGMakerAceParser.is_ace_project(path)
-        is_2k = RPGMaker2KParser.is_2k_project(path)
+        handler_cls = detect_engine(path)
+        if handler_cls:
+            self._project_type = handler_cls.key
+        else:
+            self._project_type = "rpgmaker_mv"
+        self._sync_project_type(self._project_type)
         try:
-            if is_tyrano:
-                self._project_type = "tyranoscript"
-                entries = self.tyrano_parser.load_project(path)
-            elif is_srpg:
-                self._project_type = "srpgstudio"
-                entries = self.srpg_parser.load_project(path)
-            elif is_ace:
-                self._project_type = "rpgmaker_ace"
-                entries = self.ace_parser.load_project(path)
-            elif is_2k:
-                self._project_type = "rpgmaker_2k"
-                entries = self.rm2k_parser.load_project(path)
-            else:
-                self._project_type = "rpgmaker"
-                entries = self.parser.load_project(path)
-            self._sync_project_type(self._project_type)
+            entries = self.handler.load_project(path)
         except FileNotFoundError as e:
             QMessageBox.warning(self, "Error", str(e))
             return
@@ -863,7 +828,7 @@ class MainWindow(QMainWindow):
         self.event_viewer.set_entries(entries)
 
         # Defer actor gender dialog + pre-translate to first batch start
-        self._actors_ready = is_tyrano or is_srpg  # No actor system in Tyrano/SRPG; RM2K has actors
+        self._actors_ready = not self.handler.has_actors
 
         # Check for vocab.txt first — if found and accepted, skip default glossary
         vocab_loaded = self._check_vocab_file(path)
@@ -874,7 +839,7 @@ class MainWindow(QMainWindow):
             reply = QMessageBox.question(
                 self, "Load Default Glossary?",
                 "Would you like to load common term translations?\n\n"
-                "This adds ~100 preset Japanese\u2192English mappings for body parts,\n"
+                "This adds ~100 preset Japanese→English mappings for body parts,\n"
                 "RPG terms, expressions, etc. so the LLM translates them consistently.\n\n"
                 "These go into the General Glossary (shared across all projects).\n"
                 "You can edit them in Settings > General Glossary.",
@@ -888,7 +853,7 @@ class MainWindow(QMainWindow):
         self._rebuild_glossary()
 
         # RPG Maker MV/MZ-specific: analyze plugins for word wrap settings
-        if not is_tyrano and not is_srpg and not is_ace and not is_2k:
+        if self.handler.has_plugin_system:
             self.plugin_analyzer.analyze_project(path)
 
         self._enable_project_actions()
@@ -896,36 +861,16 @@ class MainWindow(QMainWindow):
         # Initialize image panel
         self.image_panel.set_project(path, self.client)
 
-        if is_srpg:
-            self.statusbar.showMessage(
-                f"SRPG Studio: {len(entries)} entries from Project.srpgs", 8000
-            )
-        elif is_ace:
-            self.statusbar.showMessage(
-                f"VX Ace: {len(entries)} entries from "
-                f"{len(set(e.file for e in entries))} .rvdata2 files", 8000
-            )
-        elif is_2k:
-            map_count = sum(1 for e in entries if e.file.lower().endswith('.lmu'))
-            self.statusbar.showMessage(
-                f"RM2K/2K3: {len(entries)} entries from "
-                f"{len(set(e.file for e in entries))} files", 8000
-            )
-        elif is_tyrano:
-            self.statusbar.showMessage(
-                f"TyranoScript: {len(entries)} entries from "
-                f"{len(set(e.file for e in entries))} files", 8000
-            )
-        else:
-            plugin_info = ""
+        # Status bar message
+        status_msg = self.handler.get_status_message(entries)
+        if self.handler.has_plugin_system:
             if self.plugin_analyzer.detected_plugins:
-                plugin_info = f" | Plugins: {', '.join(self.plugin_analyzer.detected_plugins)}"
-            self.statusbar.showMessage(
-                f"Loaded {len(entries)} entries | "
-                f"~{self.plugin_analyzer.chars_per_line} chars/line{plugin_info}", 8000
-            )
+                status_msg += f" | Plugins: {', '.join(self.plugin_analyzer.detected_plugins)}"
+            status_msg += f" | ~{self.plugin_analyzer.chars_per_line} chars/line"
+        self.statusbar.showMessage(status_msg, 8000)
 
-            # Info about plugin entries
+        # Info about plugin entries (MV/MZ only)
+        if self.handler.has_plugin_system:
             plugin_count = sum(1 for e in entries if e.file == "plugins.js")
             if plugin_count > 0:
                 QMessageBox.information(
@@ -940,13 +885,10 @@ class MainWindow(QMainWindow):
 
         # Window title
         folder = os.path.basename(path)
-        engine = {"srpgstudio": "SRPG Studio", "tyranoscript": "TyranoScript",
-                  "rpgmaker_ace": "RPG Maker VX Ace",
-                  "rpgmaker_2k": "RPG Maker 2000/2003"}.get(self._project_type, "RPG Maker")
-        self.setWindowTitle(f"{engine} Translator \u2014 {folder}")
+        self.setWindowTitle(f"{self.handler.display_name} Translator — {folder}")
 
-        # Offer folder rename for SRPG Studio (no actors to pre-translate)
-        if is_srpg:
+        # Offer folder rename for engines without actors (no pre-translate step)
+        if not self.handler.has_actors:
             self._srpg_pre_translate_title(path)
 
         # Offer wizard vs manual mode for new projects
@@ -999,7 +941,7 @@ class MainWindow(QMainWindow):
 
         # Reset project
         self.project = TranslationProject()
-        self._sync_project_type("rpgmaker")
+        self._sync_project_type("rpgmaker_mv")
         self.file_tree.load_project(self.project)
         self.trans_table.set_entries([])
         self.event_viewer.set_entries([])
@@ -1255,18 +1197,12 @@ class MainWindow(QMainWindow):
             return False
 
         entries = self.project.entries
-        if self._project_type == "rpgmaker_ace":
-            active_parser = self.ace_parser
-        elif self._project_type == "rpgmaker_2k":
-            active_parser = self.rm2k_parser
-        else:
-            active_parser = self.parser
-        actors_raw = active_parser.load_actors_raw(path)
+        actors_raw = self.handler.load_actors(path)
 
         # Pre-translate game title + actor info so the user can read them
         translated_title = ""
         actor_translations = {}
-        raw_title = active_parser.get_game_title(path)
+        raw_title = self.handler.get_game_title(path)
         title_id = "System.rvdata2/game_title" if self._project_type == "rpgmaker_ace" else "System.json/gameTitle"
         has_jp_title = any(e.id == title_id for e in entries)
         if actors_raw or has_jp_title:
@@ -1320,7 +1256,7 @@ class MainWindow(QMainWindow):
 
                 # Inject JP gender profile into data_original so LLM has context
                 # (MV/MZ only — writes to Actors.json)
-                if self._project_type not in ("rpgmaker_2k",):
+                if self.handler.has_plugin_system:
                     self._inject_protag_profile(path, protag_gender)
 
         # Show gender assignment dialog with translated names
@@ -1417,7 +1353,7 @@ class MainWindow(QMainWindow):
             return 0
         before = len(self.project.glossary)
         for entry in self.project.entries:
-            fields = self._AUTO_GLOSSARY_FIELDS.get(entry.file)
+            fields = self.handler.auto_glossary_fields.get(entry.file)
             is_map_name = (
                 entry.file.startswith("Map")
                 and entry.file.endswith(".json")
@@ -1451,7 +1387,7 @@ class MainWindow(QMainWindow):
 
     def _maybe_add_to_glossary(self, entry):
         """Auto-add translated DB name fields to glossary for LLM consistency."""
-        fields = self._AUTO_GLOSSARY_FIELDS.get(entry.file)
+        fields = self.handler.auto_glossary_fields.get(entry.file)
         is_map_name = (
             entry.file.startswith("Map")
             and entry.file.endswith(".json")
@@ -1596,8 +1532,7 @@ class MainWindow(QMainWindow):
                 self._last_save_path = os.path.join(
                     new_path, os.path.basename(self._last_save_path)
                 )
-            engine = {"srpgstudio": "SRPG Studio", "tyranoscript": "TyranoScript"}.get(self._project_type, "RPG Maker")
-            self.setWindowTitle(f"{engine} Translator \u2014 {new_name}")
+            self.setWindowTitle(f"{self.handler.display_name} Translator \u2014 {new_name}")
             self.statusbar.showMessage(f"Renamed folder to: {new_name}", 5000)
         except OSError as e:
             QMessageBox.warning(self, "Rename Failed",
@@ -1650,8 +1585,7 @@ class MainWindow(QMainWindow):
             f"({self.project.translated_count} translated)", 5000
         )
         name = os.path.basename(self.project.project_path) if self.project.project_path else "Restored"
-        engine = {"srpgstudio": "SRPG Studio", "tyranoscript": "TyranoScript"}.get(self._project_type, "RPG Maker")
-        self.setWindowTitle(f"{engine} Translator \u2014 {name}")
+        self.setWindowTitle(f"{self.handler.display_name} Translator \u2014 {name}")
 
     def _restore_from_state(self, path: str) -> bool:
         """Load a save file and restore full project state.
@@ -1673,24 +1607,11 @@ class MainWindow(QMainWindow):
         # the project folder like _translation_state.json).
         if self.project.project_path and not os.path.isdir(self.project.project_path):
             save_dir = os.path.dirname(os.path.abspath(path))
-            if is_tyrano:
-                if TyranoScriptParser.is_tyranoscript_project(save_dir):
-                    self.project.project_path = save_dir
-            elif self._project_type == "srpgstudio":
-                if SRPGStudioParser.is_srpgstudio_project(save_dir):
-                    self.project.project_path = save_dir
-            elif self._project_type == "rpgmaker_ace":
-                if RPGMakerAceParser.is_ace_project(save_dir):
-                    self.project.project_path = save_dir
-            elif self._project_type == "rpgmaker_2k":
-                if RPGMaker2KParser.is_2k_project(save_dir):
-                    self.project.project_path = save_dir
-            else:
-                if self.parser._find_data_dir(save_dir):
-                    self.project.project_path = save_dir
+            if self.handler.is_valid_project_dir(save_dir):
+                self.project.project_path = save_dir
 
         # RPG Maker MV/MZ-specific: merge plugin entries added after the state was saved
-        if self._project_type == "rpgmaker" and self.project.project_path:
+        if self.handler.has_plugin_system and self.project.project_path:
             self._merge_new_plugin_entries()
 
         self.file_tree.load_project(self.project)
@@ -1703,10 +1624,9 @@ class MainWindow(QMainWindow):
 
         self._rebuild_glossary()
 
-        # Restore actor context from saved genders (RPG Maker MV/MZ and VX Ace)
-        if self._project_type in ("rpgmaker", "rpgmaker_ace", "rpgmaker_2k") and self.project.actor_genders and self.project.project_path:
-            active_parser = {"rpgmaker_ace": self.ace_parser, "rpgmaker_2k": self.rm2k_parser}.get(self._project_type, self.parser)
-            actors_raw = active_parser.load_actors_raw(self.project.project_path)
+        # Restore actor context from saved genders
+        if self.handler.has_actors and self.project.actor_genders and self.project.project_path:
+            actors_raw = self.handler.load_actors(self.project.project_path)
             if actors_raw:
                 self.client.actor_context = self.parser.build_actor_context(
                     actors_raw, self.project.actor_genders
@@ -1719,7 +1639,7 @@ class MainWindow(QMainWindow):
                     self._update_speaker_names(actors_raw, actor_tl)
             self._actors_ready = True
         else:
-            self._actors_ready = self._project_type not in ("rpgmaker", "rpgmaker_ace", "rpgmaker_2k")
+            self._actors_ready = not self.handler.has_actors
 
         self._backfill_db_glossary()
         self._last_save_path = path
@@ -1784,19 +1704,19 @@ class MainWindow(QMainWindow):
 
         # Reset pipeline bar for manual mode (wizard controls its own flow)
         if not self._wizard_active:
-            self.pipeline_bar.set_engine(self._project_type)
+            self.pipeline_bar.set_engine(self.handler.pipeline_steps)
             self.pipeline_bar.reset()
             # Auto-detect already-completed steps
-            if self._project_type in ("tyranoscript", "srpgstudio"):
-                # TyranoScript/SRPG Studio: single "Translate" step covers all entries
+            if not self.handler.has_db_split:
+                # Engines without DB split: single "Translate" step covers all entries
                 all_done = all(
                     e.status != "untranslated" for e in self.project.entries
                 ) if self.project.entries else False
                 if all_done:
                     self.pipeline_bar.mark_done("dialogue")
             else:
-                db_entries = [e for e in self.project.entries if e.file in self._DB_FILES]
-                dialogue_entries = [e for e in self.project.entries if e.file not in self._DB_FILES]
+                db_entries = [e for e in self.project.entries if e.file in self.handler.db_files]
+                dialogue_entries = [e for e in self.project.entries if e.file not in self.handler.db_files]
                 db_done = all(e.status != "untranslated" for e in db_entries) if db_entries else False
                 dlg_done = all(e.status != "untranslated" for e in dialogue_entries) if dialogue_entries else False
                 if db_done:
@@ -1805,22 +1725,81 @@ class MainWindow(QMainWindow):
                     self.pipeline_bar.mark_done("dialogue")
 
     def _sync_project_type(self, ptype: str):
-        """Update project type on client and switch system prompt accordingly."""
+        """Update project type on client, handler, and system prompt."""
+        # Resolve legacy alias from old save files
+        from ..engine_handler import _KEY_ALIASES
+        ptype = _KEY_ALIASES.get(ptype, ptype)
         self._project_type = ptype
+        self.handler = self._engine_handlers.get(ptype, self._engine_handlers["rpgmaker_mv"])
         self.client.project_type = ptype
         # Auto-switch system prompt unless user has customized it
-        from ..ai_client import SYSTEM_PROMPT, TYRANO_SYSTEM_PROMPT, SRPG_SYSTEM_PROMPT
+        from ..ai_client import _PROMPT_REGISTRY
         current = self.client.system_prompt.strip()
-        # Only auto-switch if using a default prompt (not user-customized)
-        if (current == SYSTEM_PROMPT.strip()
-                or current == TYRANO_SYSTEM_PROMPT.strip()
-                or current == SRPG_SYSTEM_PROMPT.strip()
-                or not current):
+        known_prompts = {p.strip() for p in _PROMPT_REGISTRY.values()}
+        # Only auto-switch if using a known engine prompt (not user-customized)
+        if current in known_prompts or not current:
             self.client.system_prompt = build_system_prompt(
                 target_language=self.client.target_language,
                 model=self.client.model,
                 project_type=ptype,
             )
+        # Apply per-engine settings (saved overrides or handler defaults)
+        self._apply_engine_settings(ptype)
+
+    def _apply_engine_settings(self, engine_key: str):
+        """Apply per-engine settings from saved overrides or handler defaults."""
+        handler = self.handler
+        # Load saved per-engine overrides
+        overrides = self._engine_overrides.get(engine_key, {})
+
+        # Context size
+        ctx = overrides.get("context_size", handler.default_context_size)
+        if self.parser:
+            self.parser.context_size = ctx
+        for h in self._engine_handlers.values():
+            if h.parser and h.parser is not self.parser:
+                # Also set on alternate parsers for consistency
+                if hasattr(h.parser, 'context_size'):
+                    h.parser.context_size = ctx
+
+        # Batch size
+        batch = overrides.get("batch_size", handler.default_batch_size)
+        if self.engine:
+            self.engine.batch_size = batch
+
+        # Workers
+        if "workers" in overrides and self.engine:
+            self.engine.num_workers = overrides["workers"]
+
+        # Word wrap chars/line
+        ww = overrides.get("wordwrap_chars", handler.default_wordwrap_chars)
+        if self.plugin_analyzer:
+            self.plugin_analyzer._manual_chars_per_line = ww
+            if ww > 0:
+                self.plugin_analyzer.chars_per_line = ww
+
+        # Per-engine model override
+        model = overrides.get("model", "")
+        if model:
+            self.client.model = model
+
+    def _save_engine_settings(self):
+        """Save current settings as per-engine overrides for the active engine."""
+        engine_key = self._project_type
+        overrides = {}
+        if self.parser:
+            overrides["context_size"] = self.parser.context_size
+        if self.engine:
+            overrides["batch_size"] = self.engine.batch_size
+            overrides["workers"] = self.engine.num_workers
+        if self.plugin_analyzer:
+            overrides["wordwrap_chars"] = getattr(
+                self.plugin_analyzer, '_manual_chars_per_line', 0)
+        # Preserve model override if one was set
+        existing = self._engine_overrides.get(engine_key, {})
+        if "model" in existing:
+            overrides["model"] = existing["model"]
+        self._engine_overrides[engine_key] = overrides
 
     def _ensure_ollama_ready(self):
         """Start Ollama if needed. Called on-demand before translation."""
@@ -2562,8 +2541,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Nothing to Export", "No translated entries to export.")
             return
 
-        # Check for unwrapped lines (RPG Maker MV/MZ only — others don't use plugin word wrap)
-        unwrapped = 0 if self._project_type in ("tyranoscript", "srpgstudio", "rpgmaker_ace", "rpgmaker_2k") else self._check_unwrapped_entries(translated)
+        # Check for unwrapped lines (only engines with plugin word wrap)
+        unwrapped = self._check_unwrapped_entries(translated) if self.handler.has_plugin_system else 0
         if unwrapped > 0:
             result = QMessageBox.warning(
                 self, "Lines May Overflow",
@@ -2587,12 +2566,7 @@ class MainWindow(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle("Apply Translation to Game")
         layout = QVBoxLayout(dlg)
-        backup_name = {
-            "srpgstudio": "data_original.dts",
-            "tyranoscript": "scenario_original/",
-            "rpgmaker_ace": "Data_original/",
-            "rpgmaker_2k": "RPG_RT_original.ldb + *_original.lmu",
-        }.get(self._project_type, "data_original/")
+        backup_name = self.handler.backup_description
         layout.addWidget(QLabel(
             f"This will overwrite {len(set(e.file for e in translated))} "
             f"file(s) in:\n{self.project.project_path}\n\n"
@@ -2615,45 +2589,12 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            if self._project_type == "srpgstudio":
-                self.srpg_parser.save_project(
-                    self.project.project_path, self.project.entries)
-                QMessageBox.information(
-                    self, "Export Complete",
-                    f"Exported {len(translated)} translations to data.dts.\n"
-                    f"Original file backed up as data_original.dts."
-                )
-            elif self._project_type == "rpgmaker_ace":
-                self.ace_parser.save_project(
-                    self.project.project_path, self.project.entries)
-                QMessageBox.information(
-                    self, "Export Complete",
-                    f"Exported {len(translated)} translations to .rvdata2 files.\n"
-                    f"Original files backed up in Data_original/."
-                )
-            elif self._project_type == "rpgmaker_2k":
-                self.rm2k_parser.save_project(
-                    self.project.project_path, self.project.entries)
-                QMessageBox.information(
-                    self, "Export Complete",
-                    f"Exported {len(translated)} translations to LCF files.\n"
-                    f"Original files backed up with _original suffix."
-                )
-            elif self._project_type == "tyranoscript":
-                self.tyrano_parser.save_project(
-                    self.project.project_path, self.project.entries)
-                QMessageBox.information(
-                    self, "Export Complete",
-                    f"Exported {len(translated)} translations to .ks files.\n"
-                    f"Original files backed up in scenario_original/."
-                )
-            else:
-                self.parser.save_project(
-                    self.project.project_path, self.project.entries)
+            self.handler.save_project(
+                self.project.project_path, self.project.entries)
 
-                # Auto-inject word wrap plugin when translations use <WordWrap> tags
-                # and no existing plugin handles them
-                plugin_msg = ""
+            # MV/MZ post-export: plugin injection
+            plugin_msg = ""
+            if self.handler.has_plugin_system:
                 has_ww_tags = any(
                     e.translation and "<WordWrap>" in e.translation
                     for e in translated
@@ -2664,12 +2605,10 @@ class MainWindow(QMainWindow):
                             self.project.project_path, max_chars=cpl):
                         plugin_msg = f"\nWord wrap plugin injected ({cpl} chars/line)."
 
-                # Disable splash screen plugin if setting is on
                 if self._disable_splash:
                     if self.parser.disable_splash_plugin(self.project.project_path):
                         plugin_msg += "\n'Made with RPG Maker' splash disabled."
 
-                # Generate translation splash screen
                 if self._show_translation_splash:
                     try:
                         from ..splash_generator import inject_splash
@@ -2678,29 +2617,87 @@ class MainWindow(QMainWindow):
                     except Exception as exc:
                         log.warning("Splash injection failed: %s", exc)
 
-                QMessageBox.information(
-                    self, "Export Complete",
-                    f"Exported {len(translated)} translations to game files.\n"
-                    f"Original Japanese files backed up in data_original/."
-                    + plugin_msg
-                )
+            # RM2K/2K3: auto-copy EasyRPG Player for locale-independent play
+            if self.handler.key == "rpgmaker_2k":
+                easyrpg_msg = self._ensure_easyrpg_player(
+                    self.project.project_path)
+                if easyrpg_msg:
+                    plugin_msg += "\n" + easyrpg_msg
+
+            QMessageBox.information(
+                self, "Export Complete",
+                self.handler.get_export_message(len(translated)) + plugin_msg
+            )
             if not self._wizard_active:
                 self.pipeline_bar.mark_done("export")
         except Exception as e:
             QMessageBox.critical(self, "Export Failed", str(e))
+
+    # ── EasyRPG Player auto-download ─────────────────────────────
+
+    _EASYRPG_URL = ("https://easyrpg.org/downloads/player/0.8.1.1/"
+                    "easyrpg-player-0.8.1.1-windows-x64.zip")
+
+    def _ensure_easyrpg_player(self, game_dir: str) -> str:
+        """Copy EasyRPG Player into the game folder for locale-free play.
+
+        Downloads on first use, caches in tools/ next to main.py.
+        Returns a status message string, or empty if already present.
+        """
+        dest = os.path.join(game_dir, "Player.exe")
+        if os.path.isfile(dest):
+            return ""
+
+        # Check local cache
+        app_dir = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        tools_dir = os.path.join(app_dir, "tools")
+        cached = os.path.join(tools_dir, "easyrpg-player.exe")
+
+        if not os.path.isfile(cached):
+            # Download
+            try:
+                import io
+                import zipfile
+                import urllib.request
+                log.info("Downloading EasyRPG Player…")
+                with urllib.request.urlopen(self._EASYRPG_URL, timeout=30) as r:
+                    zip_data = r.read()
+                with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
+                    # Find the exe inside the zip
+                    exe_names = [n for n in zf.namelist()
+                                 if n.lower().endswith(".exe")]
+                    if not exe_names:
+                        log.warning("No exe found in EasyRPG zip")
+                        return ""
+                    os.makedirs(tools_dir, exist_ok=True)
+                    with open(cached, "wb") as f:
+                        f.write(zf.read(exe_names[0]))
+                log.info("EasyRPG Player cached at %s", cached)
+            except Exception as exc:
+                log.warning("Failed to download EasyRPG Player: %s", exc)
+                return ""
+
+        # Copy to game folder
+        try:
+            shutil.copy2(cached, dest)
+            return "EasyRPG Player.exe added — run it instead of RPG_RT.exe."
+        except Exception as exc:
+            log.warning("Failed to copy EasyRPG Player: %s", exc)
+            return ""
 
     def _restore_originals(self):
         """Restore the original Japanese game files from backup."""
         if not self.project or not self.project.project_path:
             return
 
-        # SRPG Studio: single-file restore
-        if self._project_type == "srpgstudio":
+        # Engines with simple parser-based restore (SRPG, Ace, RM2K)
+        if hasattr(self.handler.parser, 'restore_originals') and self._project_type not in ("rpgmaker_mv", "rpgmaker_mz", "tyranoscript"):
             try:
-                self.srpg_parser.restore_originals(self.project.project_path)
+                self.handler.restore_originals(self.project.project_path)
                 QMessageBox.information(
                     self, "Restore Complete",
-                    "Original data.dts restored from data_original.dts."
+                    self.handler.get_restore_message()
                 )
             except FileNotFoundError as e:
                 QMessageBox.information(self, "No Backup Found", str(e))
@@ -2708,35 +2705,9 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Restore Failed", str(e))
             return
 
-        # RM2K/2K3: *_original.ldb / *_original.lmu restore
-        if self._project_type == "rpgmaker_2k":
-            try:
-                self.rm2k_parser.restore_originals(self.project.project_path)
-                QMessageBox.information(
-                    self, "Restore Complete",
-                    "Original LCF files restored from _original backups."
-                )
-            except Exception as e:
-                QMessageBox.critical(self, "Restore Failed", str(e))
-            return
-
-        # VX Ace: Data_original/ → Data/ restore
-        if self._project_type == "rpgmaker_ace":
-            try:
-                self.ace_parser.restore_originals(self.project.project_path)
-                QMessageBox.information(
-                    self, "Restore Complete",
-                    "Original .rvdata2 files restored from Data_original/."
-                )
-            except Exception as e:
-                QMessageBox.critical(self, "Restore Failed", str(e))
-            return
-
-        # Find the right directory based on engine type
+        # MV/MZ and TyranoScript: directory-based restore with atomic swap
         if self._project_type == "tyranoscript":
-            from ..tyranoscript import TyranoScriptParser
-            tyrano = TyranoScriptParser()
-            data_dir = tyrano._find_scenario_dir(self.project.project_path)
+            data_dir = self.tyrano_parser._find_scenario_dir(self.project.project_path)
             backup_dir = os.path.join(
                 os.path.dirname(data_dir), "scenario_original") if data_dir else None
         else:
@@ -2906,12 +2877,16 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self):
         """Open the settings dialog."""
+        # Capture current engine settings before showing dialog
+        self._save_engine_settings()
         dlg = SettingsDialog(
             self.client, self, parser=self.parser, dark_mode=self._dark_mode,
             plugin_analyzer=self.plugin_analyzer, engine=self.engine,
             export_review_file=self._export_review_file,
             disable_splash=self._disable_splash,
             show_translation_splash=self._show_translation_splash,
+            engine_overrides=self._engine_overrides,
+            engine_handlers=self._engine_handlers,
         )
         if dlg.exec():
             # Apply dark mode if changed
@@ -2922,6 +2897,9 @@ class MainWindow(QMainWindow):
             self._export_review_file = dlg.export_review_file
             self._disable_splash = dlg.disable_splash
             self._show_translation_splash = dlg.show_translation_splash
+            # Apply updated engine overrides from dialog
+            self._engine_overrides = dlg.engine_overrides
+            self._apply_engine_settings(self._project_type)
             self._save_settings()
             # Preload model into VRAM if model changed (avoids cold-start delay)
             if not self.client.is_cloud:
@@ -3014,12 +2992,12 @@ class MainWindow(QMainWindow):
             # Check if there are dialogue entries left
             untranslated_dialogue = [
                 e for e in self.project.entries
-                if e.status == "untranslated" and e.file not in self._DB_FILES
+                if e.status == "untranslated" and e.file not in self.handler.db_files
             ]
             if untranslated_dialogue:
                 db_done = sum(
                     1 for e in self.project.entries
-                    if e.file in self._DB_FILES
+                    if e.file in self.handler.db_files
                     and e.status in ("translated", "reviewed")
                 )
                 glossary_size = len(self.client.glossary)
@@ -3080,7 +3058,7 @@ class MainWindow(QMainWindow):
         for entry in self.project.entries:
             if entry.status not in ("translated", "reviewed"):
                 continue
-            fields = self._AUTO_GLOSSARY_FIELDS.get(entry.file)
+            fields = self.handler.auto_glossary_fields.get(entry.file)
             is_name = (fields and entry.field in fields) or (
                 entry.file.startswith("Map") and entry.field == self._AUTO_GLOSSARY_MAP_FIELD
             )
@@ -3256,9 +3234,13 @@ class MainWindow(QMainWindow):
             self._show_translation_splash = cfg["show_translation_splash"]
         if "inject_wordwrap" in cfg:
             self.plugin_analyzer.inject_wordwrap = cfg["inject_wordwrap"]
+        if "engine_settings" in cfg and isinstance(cfg["engine_settings"], dict):
+            self._engine_overrides = cfg["engine_settings"]
 
     def _save_settings(self):
         """Persist current settings to _settings.json."""
+        # Capture current engine's settings before saving
+        self._save_engine_settings()
         cfg = {
             "ollama_url": self.client.base_url,
             "model": self.client.model,
@@ -3283,6 +3265,7 @@ class MainWindow(QMainWindow):
             "disable_splash": self._disable_splash,
             "show_translation_splash": self._show_translation_splash,
             "inject_wordwrap": self.plugin_analyzer.inject_wordwrap,
+            "engine_settings": self._engine_overrides,
         }
         try:
             with open(self._SETTINGS_FILE, "w", encoding="utf-8") as f:
@@ -3376,8 +3359,8 @@ class MainWindow(QMainWindow):
 
     def _on_pipeline_step(self, step_key: str):
         """Handle Next Step button click from the pipeline bar."""
-        if step_key == "dialogue" and self._project_type in ("tyranoscript", "srpgstudio"):
-            # TyranoScript/SRPG Studio has no DB/dialogue split — translate everything
+        if step_key == "dialogue" and not self.handler.has_db_split:
+            # Engines without DB split: single "Translate" step covers all entries
             self._start_batch(mode="all")
             return
         actions = {
@@ -3415,8 +3398,8 @@ class MainWindow(QMainWindow):
         # Check if any DB names have been glossary'd
         db_glossary_count = sum(
             1 for e in self.project.entries
-            if e.file in self._DB_FILES
-            and e.field in (self._AUTO_GLOSSARY_FIELDS.get(e.file) or ())
+            if e.file in self.handler.db_files
+            and e.field in (self.handler.auto_glossary_fields.get(e.file) or ())
             and e.status in ("translated", "reviewed")
         )
         if db_glossary_count == 0:
@@ -3582,9 +3565,9 @@ class MainWindow(QMainWindow):
         for e in self.project.entries:
             if e.status != "untranslated":
                 continue
-            if mode == "db" and e.file not in self._DB_FILES:
+            if mode == "db" and e.file not in self.handler.db_files:
                 continue
-            if mode == "dialogue" and e.file in self._DB_FILES:
+            if mode == "dialogue" and e.file in self.handler.db_files:
                 continue
             stripped = e.original.strip()
             if stripped in glossary:
@@ -3660,7 +3643,7 @@ class MainWindow(QMainWindow):
 
         # Update pipeline bar
         if not self._wizard_active:
-            if self._project_type in ("tyranoscript", "srpgstudio"):
+            if not self.handler.has_db_split:
                 step = "dialogue"  # Single translate step (no DB/dialogue split)
             else:
                 step = "db" if mode == "db" else "dialogue" if mode == "dialogue" else "db"
@@ -3675,9 +3658,9 @@ class MainWindow(QMainWindow):
 
         untranslated = [e for e in self.project.entries if e.status == "untranslated"]
         if mode == "db":
-            untranslated = [e for e in untranslated if e.file in self._DB_FILES]
+            untranslated = [e for e in untranslated if e.file in self.handler.db_files]
         elif mode == "dialogue":
-            untranslated = [e for e in untranslated if e.file not in self._DB_FILES]
+            untranslated = [e for e in untranslated if e.file not in self.handler.db_files]
 
         if not untranslated:
             if not self._wizard_active:
@@ -3774,12 +3757,12 @@ class MainWindow(QMainWindow):
         if not self.project.entries:
             return
 
-        if self._project_type == "srpgstudio":
-            self._apply_wordwrap_srpg()
-            return
-
-        if self._project_type == "tyranoscript":
-            self._apply_wordwrap_tyrano()
+        if self._project_type in ("srpgstudio", "tyranoscript"):
+            # Engine-specific word wrap (no plugin analyzer needed)
+            if self._project_type == "srpgstudio":
+                self._apply_wordwrap_srpg()
+            else:
+                self._apply_wordwrap_tyrano()
             return
 
         cpl = self.plugin_analyzer.chars_per_line
@@ -4183,8 +4166,7 @@ class MainWindow(QMainWindow):
             return 0
 
         from .. import CONTROL_CODE_RE, TYRANO_CODE_RE
-        code_re = (TYRANO_CODE_RE if self._project_type == "tyranoscript"
-                   else CONTROL_CODE_RE)
+        code_re = TYRANO_CODE_RE if self._project_type == "tyranoscript" else CONTROL_CODE_RE
 
         fixed = 0
         for entry in self.project.entries:

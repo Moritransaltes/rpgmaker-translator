@@ -147,13 +147,20 @@ class PipelineBar(QWidget):
                 self._layout.insertWidget(insert_pos, arrow)
                 insert_pos += 1
 
-    def set_engine(self, engine: str):
-        """Switch pipeline steps for the given engine type."""
-        if engine == "tyranoscript":
+    def set_engine(self, engine_key_or_steps):
+        """Switch pipeline steps for the given engine.
+
+        Args:
+            engine_key_or_steps: Either an engine key string (legacy) or
+                a list of (key, label) tuples from handler.pipeline_steps.
+        """
+        if isinstance(engine_key_or_steps, list):
+            new_steps = engine_key_or_steps
+        elif engine_key_or_steps == "tyranoscript":
             new_steps = TYRANOSCRIPT_STEPS
-        elif engine == "srpgstudio":
+        elif engine_key_or_steps == "srpgstudio":
             new_steps = SRPGSTUDIO_STEPS
-        elif engine == "rpgmaker_2k":
+        elif engine_key_or_steps == "rpgmaker_2k":
             new_steps = RPGMAKER2K_STEPS
         else:
             new_steps = RPGMAKER_STEPS

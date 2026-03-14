@@ -46,7 +46,8 @@ class SettingsDialog(QDialog):
     def __init__(self, client: AIClient, parent=None, parser: RPGMakerMVParser = None,
                  dark_mode: bool = True, plugin_analyzer=None, engine=None,
                  export_review_file: bool = False, disable_splash: bool = True,
-                 show_translation_splash: bool = True):
+                 show_translation_splash: bool = True,
+                 engine_overrides: dict = None, engine_handlers: dict = None):
         super().__init__(parent)
         self.client = client
         self.parser = parser
@@ -56,6 +57,8 @@ class SettingsDialog(QDialog):
         self.show_translation_splash = show_translation_splash
         self.plugin_analyzer = plugin_analyzer
         self.engine = engine
+        self.engine_overrides = engine_overrides or {}
+        self.engine_handlers = engine_handlers or {}
         self.setWindowTitle("Settings")
         self.setMinimumSize(600, 500)
         self._build_ui()
@@ -71,6 +74,7 @@ class SettingsDialog(QDialog):
         self._build_provider_tab()
         self._build_prompt_tab()
         self._build_options_tab()
+        self._build_engines_tab()
 
         # ── Bottom buttons ─────────────────────────────────────────
         btn_row = QHBoxLayout()
@@ -336,6 +340,208 @@ class SettingsDialog(QDialog):
         vbox.addStretch()
         self.tabs.addTab(tab, "Options")
 
+    # ── Tab 4: Engines ─────────────────────────────────────────────
+
+    def _build_engines_tab(self):
+        """Per-engine settings grid — all engines visible at once."""
+        from PyQt6.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView
+        tab = QWidget()
+        vbox = QVBoxLayout(tab)
+
+        info = QLabel(
+            "Per-engine settings. Change the Default row to set all engines at once,\n"
+            "then customize individual engines as needed."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #a6adc8; margin-bottom: 8px;")
+        vbox.addWidget(info)
+
+        # Columns: Engine | Context | Batch | Workers | Wrap | Model
+        headers = ["Engine", "Context", "Batch", "Workers", "Wrap", "Model"]
+        engines = list(self.engine_handlers.values())
+        # +1 row for the "Default" row at top
+        num_rows = 1 + len(engines)
+
+        self.engine_table = QTableWidget(num_rows, len(headers))
+        self.engine_table.setHorizontalHeaderLabels(headers)
+        self.engine_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Interactive)
+        self.engine_table.setColumnWidth(0, 150)
+        for col in range(1, 5):
+            self.engine_table.horizontalHeader().setSectionResizeMode(
+                col, QHeaderView.ResizeMode.ResizeToContents)
+        # Model column stretches to fill remaining space
+        self.engine_table.horizontalHeader().setSectionResizeMode(
+            5, QHeaderView.ResizeMode.Stretch)
+        self.engine_table.verticalHeader().setVisible(False)
+        self.engine_table.setSelectionMode(
+            QTableWidget.SelectionMode.NoSelection)
+
+        # Load global defaults from the Options tab values
+        from ..engine_handler import EngineHandler
+        global_ctx = self.parser.context_size if self.parser else EngineHandler.default_context_size
+        global_batch = self.engine.batch_size if self.engine else EngineHandler.default_batch_size
+        global_workers = self.engine.num_workers if self.engine else EngineHandler.default_workers
+
+        # ── Row 0: Default (applies to all) ──
+        default_item = QTableWidgetItem("Default (All Engines)")
+        default_item.setFlags(default_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        font = default_item.font()
+        font.setBold(True)
+        default_item.setFont(font)
+        self.engine_table.setItem(0, 0, default_item)
+
+        self._default_ctx = QSpinBox()
+        self._default_ctx.setRange(0, 20)
+        self._default_ctx.setValue(global_ctx)
+        self._default_ctx.setToolTip("Default context for all engines")
+        self._default_ctx.valueChanged.connect(self._on_default_changed)
+        self.engine_table.setCellWidget(0, 1, self._default_ctx)
+
+        self._default_batch = QSpinBox()
+        self._default_batch.setRange(1, 50)
+        self._default_batch.setValue(global_batch)
+        self._default_batch.setToolTip("Default batch size for all engines")
+        self._default_batch.valueChanged.connect(self._on_default_changed)
+        self.engine_table.setCellWidget(0, 2, self._default_batch)
+
+        self._default_workers = QSpinBox()
+        self._default_workers.setRange(1, 16)
+        self._default_workers.setValue(global_workers)
+        self._default_workers.setToolTip("Default workers for all engines")
+        self._default_workers.valueChanged.connect(self._on_default_changed)
+        self.engine_table.setCellWidget(0, 3, self._default_workers)
+
+        self._default_ww = QSpinBox()
+        self._default_ww.setRange(0, 200)
+        self._default_ww.setSpecialValueText("Auto")
+        self._default_ww.setValue(0)
+        self._default_ww.setToolTip("Default wordwrap for all engines")
+        self._default_ww.valueChanged.connect(self._on_default_changed)
+        self.engine_table.setCellWidget(0, 4, self._default_ww)
+
+        # No model combo for default row — model is always per-engine or global
+        default_model_label = QLabel("  (set per engine)")
+        default_model_label.setStyleSheet("color: #6c7086;")
+        self.engine_table.setCellWidget(0, 5, default_model_label)
+
+        # ── Engine rows ──
+        self._engine_spins = []  # [(key, ctx, batch, workers, ww, model)]
+
+        for i, handler in enumerate(engines):
+            row = i + 1  # offset by 1 for default row
+            key = handler.key
+            overrides = self.engine_overrides.get(key, {})
+
+            # Engine name (read-only)
+            name_item = QTableWidgetItem(handler.display_name)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.engine_table.setItem(row, 0, name_item)
+
+            # Context size spinner
+            ctx_spin = QSpinBox()
+            ctx_spin.setRange(0, 20)
+            ctx_spin.setValue(overrides.get("context_size", global_ctx))
+            ctx_spin.setToolTip("Dialogue lines sent as context to the LLM")
+            self.engine_table.setCellWidget(row, 1, ctx_spin)
+
+            # Batch size spinner
+            batch_spin = QSpinBox()
+            batch_spin.setRange(1, 50)
+            batch_spin.setValue(overrides.get("batch_size", global_batch))
+            batch_spin.setToolTip("Entries per LLM request")
+            self.engine_table.setCellWidget(row, 2, batch_spin)
+
+            # Workers spinner
+            workers_spin = QSpinBox()
+            workers_spin.setRange(1, 16)
+            workers_spin.setValue(overrides.get("workers", global_workers))
+            workers_spin.setToolTip("Parallel translation threads")
+            self.engine_table.setCellWidget(row, 3, workers_spin)
+
+            # Wordwrap chars spinner
+            ww_spin = QSpinBox()
+            ww_spin.setRange(0, 200)
+            ww_spin.setSpecialValueText("Auto")
+            ww_spin.setValue(overrides.get(
+                "wordwrap_chars", handler.default_wordwrap_chars))
+            ww_spin.setToolTip("Characters per line (0 = auto-detect)")
+            self.engine_table.setCellWidget(row, 4, ww_spin)
+
+            # Model selector
+            model_combo = QComboBox()
+            model_combo.addItem("(Use global)")
+            model_combo.setToolTip(
+                "Model to use for this engine.\n"
+                "\"(Use global)\" = use the model from the Provider tab.")
+            saved_model = overrides.get("model", "")
+            if saved_model:
+                model_combo.addItem(saved_model)
+                model_combo.setCurrentText(saved_model)
+            self.engine_table.setCellWidget(row, 5, model_combo)
+
+            self._engine_spins.append(
+                (key, ctx_spin, batch_spin, workers_spin, ww_spin, model_combo))
+
+        self.engine_table.resizeRowsToContents()
+        vbox.addWidget(self.engine_table)
+
+        # Reset to defaults button
+        reset_btn = QPushButton("Reset All to Defaults")
+        reset_btn.setToolTip("Reset all engines to their built-in default settings")
+        reset_btn.clicked.connect(self._reset_engine_defaults)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(reset_btn)
+        vbox.addLayout(btn_row)
+
+        vbox.addStretch()
+        self.tabs.addTab(tab, "Engines")
+
+    def _on_default_changed(self):
+        """Push Default row values to all engine rows."""
+        ctx = self._default_ctx.value()
+        batch = self._default_batch.value()
+        workers = self._default_workers.value()
+        ww = self._default_ww.value()
+        for key, ctx_spin, batch_spin, workers_spin, ww_spin, model_combo in self._engine_spins:
+            ctx_spin.setValue(ctx)
+            batch_spin.setValue(batch)
+            workers_spin.setValue(workers)
+            ww_spin.setValue(ww)
+
+    def _populate_engine_model_combos(self, models: list):
+        """Populate all engine model combos with the fetched model list."""
+        for key, ctx, batch, workers, ww, model_combo in self._engine_spins:
+            current = model_combo.currentText()
+            model_combo.blockSignals(True)
+            model_combo.clear()
+            model_combo.addItem("(Use global)")
+            for m in sorted(models):
+                model_combo.addItem(m)
+            # Restore previous selection
+            if current and current != "(Use global)":
+                idx = model_combo.findText(current)
+                if idx >= 0:
+                    model_combo.setCurrentIndex(idx)
+            model_combo.blockSignals(False)
+
+    def _reset_engine_defaults(self):
+        """Reset all engine spinners to handler defaults."""
+        from ..engine_handler import EngineHandler
+        self._default_ctx.setValue(EngineHandler.default_context_size)
+        self._default_batch.setValue(EngineHandler.default_batch_size)
+        self._default_workers.setValue(EngineHandler.default_workers)
+        self._default_ww.setValue(EngineHandler.default_wordwrap_chars)
+        for key, ctx, batch, workers, ww, model_combo in self._engine_spins:
+            handler = self.engine_handlers.get(key)
+            if handler:
+                ctx.setValue(EngineHandler.default_context_size)
+                batch.setValue(EngineHandler.default_batch_size)
+                workers.setValue(EngineHandler.default_workers)
+                ww.setValue(handler.default_wordwrap_chars)
+                model_combo.setCurrentIndex(0)  # "(Use global)"
+
     def _load_current(self):
         """Populate fields from current client settings."""
         self._orig_url = self.client.base_url
@@ -552,6 +758,7 @@ class SettingsDialog(QDialog):
     def _on_models_fetched(self, models: list):
         """Called when the background model fetch completes."""
         self._populate_model_combo(models)
+        self._populate_engine_model_combos(models)
 
     def _populate_model_combo(self, models: list):
         """Populate the model combo from an already-fetched model list."""
@@ -590,7 +797,7 @@ class SettingsDialog(QDialog):
             self.client,
             self.url_edit.text().strip() or "http://localhost:11434",
         )
-        self._model_fetcher.done.connect(self._populate_model_combo)
+        self._model_fetcher.done.connect(self._on_models_fetched)
         self.status_label.setText("Fetching models...")
         self._model_fetcher.start()
 
@@ -781,6 +988,18 @@ class SettingsDialog(QDialog):
             self.parser.extract_script_strings = self.script_strings_check.isChecked()
             self.parser.single_401_mode = self.single_401_check.isChecked()
             self.parser.speaker_processing = self.speaker_processing_check.isChecked()
+        # Save per-engine overrides from the Engines tab
+        for key, ctx, batch, workers, ww, model_combo in self._engine_spins:
+            model = model_combo.currentText()
+            override = {
+                "context_size": ctx.value(),
+                "batch_size": batch.value(),
+                "workers": workers.value(),
+                "wordwrap_chars": ww.value(),
+            }
+            if model and model != "(Use global)":
+                override["model"] = model
+            self.engine_overrides[key] = override
         self.accept()
 
     def _on_auto_tune_toggled(self, checked: bool):

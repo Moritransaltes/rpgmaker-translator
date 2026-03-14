@@ -71,15 +71,21 @@ def _parse_chunks(data: bytes, start: int, end: int) -> tuple[dict, int]:
     return chunks, pos
 
 
-def _write_chunks(chunks: dict) -> bytes:
-    """Serialize chunks dict back to binary. Terminates with 0x00."""
+def _write_chunks(chunks: dict, terminate: bool = True) -> bytes:
+    """Serialize chunks dict back to binary.
+
+    Args:
+        terminate: If True, append 0x00 end-of-object marker.
+            Use False for top-level file output (LDB/LMU end at EOF).
+    """
     out = bytearray()
     for cid in sorted(chunks):
         payload = chunks[cid]
         out += _write_ber(cid)
         out += _write_ber(len(payload))
         out += payload
-    out.append(0x00)
+    if terminate:
+        out.append(0x00)
     return bytes(out)
 
 
@@ -637,7 +643,7 @@ class RPGMaker2KParser:
         if changed:
             out = bytearray()
             out += _write_header(header)
-            out += _write_chunks(db_chunks)
+            out += _write_chunks(db_chunks, terminate=False)
             with open(target_path, 'wb') as f:
                 f.write(out)
             log.info("Exported translations to %s", target_path)
@@ -686,7 +692,7 @@ class RPGMaker2KParser:
             map_chunks[MAP_EVENTS] = _write_array(events)
             out = bytearray()
             out += _write_header(header)
-            out += _write_chunks(map_chunks)
+            out += _write_chunks(map_chunks, terminate=False)
             with open(target_path, 'wb') as f:
                 f.write(out)
 

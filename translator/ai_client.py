@@ -137,6 +137,12 @@ Context-sensitive translation:
 - For adult scenes, use natural and explicit English that matches the original intensity. Do not tone down or soften the language.
 - Do NOT capitalize common nouns mid-sentence. Words like girl, man, woman, succubus, charm, monster, hero, demon, etc. are lowercase unless at the start of a sentence or part of a proper title/name."""
 
+# MZ starts identical to the default MV prompt — separate constant so it can evolve independently
+MZ_SYSTEM_PROMPT = SYSTEM_PROMPT
+
+# VX Ace and RM2K share the same base prompt as MV
+ACE_SYSTEM_PROMPT = SYSTEM_PROMPT
+RM2K_SYSTEM_PROMPT = SYSTEM_PROMPT
 
 
 TYRANO_SYSTEM_PROMPT = """You are a professional Japanese to English translator specializing in visual novel dialogue, including adult (18+) content.
@@ -416,32 +422,35 @@ PROMPT_PRESETS = {
 }
 
 
+# Prompt registry — maps system_prompt_key to base prompt constant.
+# Each engine can evolve its prompt independently.
+_PROMPT_REGISTRY: dict[str, str] = {
+    "rpgmaker_mv": SYSTEM_PROMPT,
+    "rpgmaker_mz": MZ_SYSTEM_PROMPT,
+    "rpgmaker_ace": ACE_SYSTEM_PROMPT,
+    "rpgmaker_2k": RM2K_SYSTEM_PROMPT,
+    "tyranoscript": TYRANO_SYSTEM_PROMPT,
+    "srpgstudio": SRPG_SYSTEM_PROMPT,
+}
+
+
 def build_system_prompt(target_language: str = "English", model: str = "",
-                        project_type: str = "rpgmaker") -> str:
+                        project_type: str = "rpgmaker_mv") -> str:
     """Build the main translation system prompt for a given target language and model.
 
     Sugoi models use DazedMTL Full — soft guidance that works better with
     Sugoi's fine-tuning than verbose rule lists.
-    Qwen3 / other general models get the full default prompt.
-    TyranoScript projects get a visual-novel-specific prompt.
+    Each engine has its own prompt via _PROMPT_REGISTRY so they can evolve
+    independently.
     Sugoi prompt is only used for English target — non-English falls back to
-    the general prompt since Sugoi is JP→EN only.
+    the engine-specific prompt since Sugoi is JP→EN only.
     """
     if is_sugoi_model(model) and target_language in ("English", "Pig Latin"):
         return DAZEDMTL_FULL_PROMPT
-    if project_type == "tyranoscript":
-        base = TYRANO_SYSTEM_PROMPT
-        if target_language not in ("English", "Pig Latin"):
-            base = base.replace("English", target_language)
-        return base
-    if project_type == "srpgstudio":
-        base = SRPG_SYSTEM_PROMPT
-        if target_language not in ("English", "Pig Latin"):
-            base = base.replace("English", target_language)
-        return base
-    if target_language in ("English", "Pig Latin"):
-        return SYSTEM_PROMPT
-    return SYSTEM_PROMPT.replace("English", target_language)
+    base = _PROMPT_REGISTRY.get(project_type, SYSTEM_PROMPT)
+    if target_language not in ("English", "Pig Latin"):
+        base = base.replace("English", target_language)
+    return base
 
 
 def _build_name_prompt(target_language: str = "English") -> str:
@@ -466,7 +475,7 @@ class AIClient:
         self.actor_names = {}    # {actor_id(int): "name string"}
         self.glossary = {}       # JP term -> EN translation forced mappings
         self.dazed_mode = False  # DazedMTL mode toggle (batch 30, DazedMTL prompt)
-        self.project_type = "rpgmaker"  # "rpgmaker" | "tyranoscript" | "srpgstudio"
+        self.project_type = "rpgmaker_mv"  # "rpgmaker_mv" | "rpgmaker_mz" | "tyranoscript" | "srpgstudio"
         self._managed_proc = None  # subprocess.Popen if we started Ollama
         # Cost tracking (cloud APIs only) — lock protects parallel worker updates
         import threading
