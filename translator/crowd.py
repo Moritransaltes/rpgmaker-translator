@@ -566,6 +566,48 @@ class CrowdParser:
         text = re.sub(r'  +', ' ', text)
         return text.strip()
 
+    @staticmethod
+    def _wordwrap(text: str, width: int = 38) -> str:
+        """Wrap text at word boundaries, inserting @n as line breaks."""
+        lines = []
+        for paragraph in text.split('\n'):
+            words = paragraph.split(' ')
+            current_line = ''
+            for word in words:
+                if not current_line:
+                    current_line = word
+                elif len(current_line) + 1 + len(word) <= width:
+                    current_line += ' ' + word
+                else:
+                    lines.append(current_line)
+                    current_line = word
+            if current_line:
+                lines.append(current_line)
+        return '@n'.join(lines)
+
+    @staticmethod
+    def _hyphen_wrap(text: str, width: int = 40) -> str:
+        """Join words with hyphens in chunks, using space as line separator.
+
+        The Crowd engine treats ASCII space as a line break.
+        Hyphens join words within a line, spaces separate lines.
+        """
+        chunks = []
+        for paragraph in text.split('\n'):
+            words = paragraph.split(' ')
+            current = ''
+            for word in words:
+                if not current:
+                    current = word
+                elif len(current) + 1 + len(word) <= width:
+                    current += '-' + word
+                else:
+                    chunks.append(current)
+                    current = word
+            if current:
+                chunks.append(current)
+        return ' '.join(chunks)
+
     def _apply_translation(self, content: str, entry: TranslationEntry) -> str:
         """Replace the Japanese text in content with the translation."""
         # Skip SELECT command lines — these have structural SP "choice" * "choice"
@@ -575,8 +617,10 @@ class CrowdParser:
 
         translation = self._sanitize_translation(entry.translation)
 
-        # Convert newlines back to @n for the game engine
-        translation = translation.replace('\n', '@n')
+        # Crowd engine treats ASCII space (0x20) as a line/page break.
+        # Join words with hyphens in ~40-char chunks, space between chunks.
+        translation = self._hyphen_wrap(translation, 40)
+        translation = translation.replace('\n', ' ')
 
         # 1. Voice + speaker: w000001a@!Speaker@n text
         voice_m = _VOICE_SPEAKER.search(content)
