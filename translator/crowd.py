@@ -67,8 +67,10 @@ def find_key(exe_path: str, sce_path: str) -> tuple[bytes, int]:
     Returns (key_bytes, mod) or falls back to the default key.
     """
     try:
-        exe = open(exe_path, "rb").read()
-        sce = open(sce_path, "rb").read(256)
+        with open(exe_path, "rb") as f:
+            exe = f.read()
+        with open(sce_path, "rb") as f:
+            sce = f.read(256)
     except OSError:
         return _DEFAULT_KEY, _DEFAULT_MOD
 
@@ -90,9 +92,13 @@ def find_key(exe_path: str, sce_path: str) -> tuple[bytes, int]:
             if mod < 2:
                 continue
             dec = decrypt_sce(sce[:64], key, mod)
-            if dec[:2] == b"$ ":
-                log.info("Auto-detected key: %r (mod=%d)", key.decode("ascii", errors="replace"), mod)
-                return key, mod
+            # Check for "$ label $" pattern — section marker with printable label
+            if dec[:2] == b"$ " and len(dec) >= 4:
+                # Verify bytes after "$ " are printable ASCII (section label)
+                label_end = dec.find(b" $", 2)
+                if label_end > 2 and all(0x20 <= b < 0x7F for b in dec[2:label_end]):
+                    log.info("Auto-detected key: %r (mod=%d)", key.decode("ascii", errors="replace"), mod)
+                    return key, mod
 
     log.warning("Could not auto-detect key, using default")
     return _DEFAULT_KEY, _DEFAULT_MOD
@@ -142,78 +148,90 @@ class CrowdParser:
         """Parse all .sce files in the project directory."""
         if context_size is not None:
             self.context_size = context_size
-        sce_path = self._find_sce(project_dir)
-        if not sce_path:
+        sce_files = self._find_sce_files(project_dir)
+        if not sce_files:
             log.warning("No .sce file found in %s", project_dir)
             return []
 
-        # Auto-detect key from exe
+        # Auto-detect key from exe using the first .sce file
         exe_path = self._find_exe(project_dir)
         if exe_path:
-            self._key, self._mod = find_key(exe_path, sce_path)
+            self._key, self._mod = find_key(exe_path, sce_files[0])
 
-        log.info("Loading Crowd script: %s", sce_path)
-        with open(sce_path, "rb") as f:
-            enc_data = f.read()
+        all_entries = []
+        for sce_path in sce_files:
+            log.info("Loading Crowd script: %s", sce_path)
+            with open(sce_path, "rb") as f:
+                enc_data = f.read()
 
-        dec_data = decrypt_sce(enc_data, self._key, self._mod)
-        text = dec_data.decode("cp932", errors="replace")
+            dec_data = decrypt_sce(enc_data, self._key, self._mod)
+            text = dec_data.decode("cp932", errors="replace")
 
-        entries = self._parse_script(text, os.path.basename(sce_path))
-        log.info("Parsed %d translatable entries from %s", len(entries), os.path.basename(sce_path))
-        return entries
+            entries = self._parse_script(text, os.path.basename(sce_path))
+            log.info("Parsed %d translatable entries from %s", len(entries), os.path.basename(sce_path))
+            all_entries.extend(entries)
+
+        return all_entries
 
     def save_project(self, project_dir: str, entries: list[TranslationEntry]):
-        """Export translations back into the .sce file."""
-        sce_path = self._find_sce(project_dir)
-        if not sce_path:
+        """Export translations back into all .sce files."""
+        sce_files = self._find_sce_files(project_dir)
+        if not sce_files:
             log.error("No .sce file found for export")
             return
 
         backup_dir = os.path.join(project_dir, "sce_original")
-        sce_name = os.path.basename(sce_path)
-
-        # Create backup on first export
-        backup_path = os.path.join(backup_dir, sce_name)
         if not os.path.exists(backup_dir):
             os.makedirs(backup_dir)
-        if not os.path.exists(backup_path):
-            shutil.copy2(sce_path, backup_path)
-            log.info("Backed up %s to sce_original/", sce_name)
 
-        # Always read from backup for idempotent re-export
-        source = backup_path if os.path.exists(backup_path) else sce_path
-        with open(source, "rb") as f:
-            enc_data = f.read()
-
-        dec_data = decrypt_sce(enc_data, self._key, self._mod)
-        text = dec_data.decode("cp932", errors="replace")
-
-        # Build translation map: line_number -> translated text
-        trans_map = {}
+        # Group entries by filename
+        entries_by_file: dict[str, list[TranslationEntry]] = {}
         for entry in entries:
-            if entry.translation and entry.status in ("translated", "reviewed"):
-                # Entry ID format: "filename/type/line_num"
-                parts = entry.id.split("/")
-                if len(parts) >= 3:
-                    line_num = int(parts[-1])
-                    trans_map[line_num] = entry
+            entries_by_file.setdefault(entry.file, []).append(entry)
 
-        if not trans_map:
-            log.warning("No translations to export")
-            return
+        for sce_path in sce_files:
+            sce_name = os.path.basename(sce_path)
+            file_entries = entries_by_file.get(sce_name, [])
 
-        # Reconstruct the script with translations
-        translated_text = self._rebuild_script(text, trans_map)
+            # Create backup on first export
+            backup_path = os.path.join(backup_dir, sce_name)
+            if not os.path.exists(backup_path):
+                shutil.copy2(sce_path, backup_path)
+                log.info("Backed up %s to sce_original/", sce_name)
 
-        # Encode and encrypt
-        translated_bytes = translated_text.encode("cp932", errors="replace")
-        encrypted = encrypt_sce(translated_bytes, self._key, self._mod)
+            # Always read from backup for idempotent re-export
+            source = backup_path if os.path.exists(backup_path) else sce_path
+            with open(source, "rb") as f:
+                enc_data = f.read()
 
-        with open(sce_path, "wb") as f:
-            f.write(encrypted)
+            dec_data = decrypt_sce(enc_data, self._key, self._mod)
+            text = dec_data.decode("cp932", errors="replace")
 
-        log.info("Exported %d translations to %s", len(trans_map), sce_name)
+            # Build translation map: (field, line_number) -> entry
+            trans_map = {}
+            for entry in file_entries:
+                if entry.translation and entry.status in ("translated", "reviewed"):
+                    # Entry ID format: "filename/type/line_num"
+                    parts = entry.id.split("/")
+                    if len(parts) >= 3:
+                        field = parts[-2]
+                        line_num = int(parts[-1])
+                        trans_map[(field, line_num)] = entry
+
+            if not trans_map:
+                continue
+
+            # Reconstruct the script with translations
+            translated_text = self._rebuild_script(text, trans_map)
+
+            # Encode and encrypt
+            translated_bytes = translated_text.encode("cp932", errors="replace")
+            encrypted = encrypt_sce(translated_bytes, self._key, self._mod)
+
+            with open(sce_path, "wb") as f:
+                f.write(encrypted)
+
+            log.info("Exported %d translations to %s", len(trans_map), sce_name)
 
     def restore_originals(self, project_dir: str):
         """Restore original .sce from backup."""
@@ -253,22 +271,42 @@ class CrowdParser:
 
     @staticmethod
     def is_crowd_project(path: str) -> bool:
-        """Check if path contains a .sce file (Crowd engine marker)."""
+        """Check if path contains a valid Crowd .sce file.
+
+        Validates by trying the default key — a correct decryption starts
+        with ``$ `` (section marker).
+        """
         if not os.path.isdir(path):
             return False
         for name in os.listdir(path):
             if name.lower().endswith(".sce"):
-                return True
+                sce_path = os.path.join(path, name)
+                try:
+                    with open(sce_path, "rb") as f:
+                        header = f.read(64)
+                    if len(header) < 4:
+                        continue
+                    dec = decrypt_sce(header, _DEFAULT_KEY, _DEFAULT_MOD)
+                    if dec[:2] == b"$ ":
+                        return True
+                except OSError:
+                    continue
         return False
 
     # ── Private helpers ─────────────────────────────────────
 
+    def _find_sce_files(self, project_dir: str) -> list[str]:
+        """Find all .sce files in the project directory."""
+        return [
+            os.path.join(project_dir, name)
+            for name in sorted(os.listdir(project_dir))
+            if name.lower().endswith(".sce")
+        ]
+
     def _find_sce(self, project_dir: str) -> str | None:
-        """Find the .sce file in the project directory."""
-        for name in os.listdir(project_dir):
-            if name.lower().endswith(".sce"):
-                return os.path.join(project_dir, name)
-        return None
+        """Find the first .sce file in the project directory."""
+        files = self._find_sce_files(project_dir)
+        return files[0] if files else None
 
     def _find_exe(self, project_dir: str) -> str | None:
         """Find the game .exe in the project directory."""
@@ -421,7 +459,11 @@ class CrowdParser:
         return text
 
     def _rebuild_script(self, original_text: str, trans_map: dict) -> str:
-        """Rebuild the full script with translations inserted."""
+        """Rebuild the full script with translations inserted.
+
+        trans_map is keyed by (field, line_num) tuples to avoid collisions
+        between dialogue and scene_title entries at the same line number.
+        """
         parts = _LINE_DELIM.split(original_text)
 
         if len(parts) < 3:
@@ -436,19 +478,17 @@ class CrowdParser:
             # Re-insert the delimiter
             result_parts.append(f"  {line_num} ")
 
-            if line_num in trans_map:
-                entry = trans_map[line_num]
-                content = self._apply_translation(content, entry)
-
-            # Also handle scene title translations
-            title_key = line_num
-            # Check for scene_title entries
-            for key, entry in trans_map.items():
-                if (entry.field == "scene_title" and
-                        int(entry.id.split("/")[-1]) == line_num and
-                        entry.translation):
-                    content = self._apply_scene_title_translation(content, entry)
+            # Apply dialogue/narration/sound_effect translations
+            for field in ("dialogue", "narration", "sound_effect"):
+                entry = trans_map.get((field, line_num))
+                if entry and entry.translation:
+                    content = self._apply_translation(content, entry)
                     break
+
+            # Apply scene title translations (independent of dialogue)
+            scene_entry = trans_map.get(("scene_title", line_num))
+            if scene_entry and scene_entry.translation:
+                content = self._apply_scene_title_translation(content, scene_entry)
 
             result_parts.append(content)
 
