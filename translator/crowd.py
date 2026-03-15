@@ -138,9 +138,10 @@ class CrowdParser:
         self._key: bytes = _DEFAULT_KEY
         self._mod: int = _DEFAULT_MOD
 
-    def load_project(self, project_dir: str, context_size: int = 3) -> list[TranslationEntry]:
+    def load_project(self, project_dir: str, context_size: int | None = None) -> list[TranslationEntry]:
         """Parse all .sce files in the project directory."""
-        self.context_size = context_size
+        if context_size is not None:
+            self.context_size = context_size
         sce_path = self._find_sce(project_dir)
         if not sce_path:
             log.warning("No .sce file found in %s", project_dir)

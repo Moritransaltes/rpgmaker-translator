@@ -58,7 +58,11 @@ class EngineHandler:
 
     def load_project(self, path: str, context_size: int = 3) -> list:
         """Parse project, return list[TranslationEntry]."""
-        return self.parser.load_project(path, context_size=context_size)
+        # Set context_size on parser instance (all parsers store it as attribute)
+        if hasattr(self.parser, 'context_size'):
+            self.parser.context_size = context_size
+        # Call load_project without context_size kwarg — not all parsers accept it
+        return self.parser.load_project(path)
 
     def load_actors(self, path: str) -> list[dict]:
         """Load actor list for gender dialog. Returns [] if no actor system."""
@@ -366,9 +370,6 @@ class KirikiriHandler(EngineHandler):
     def get_export_label(self):
         return "Export translations to .ks files"
 
-    def get_wordwrap_label(self):
-        return "Apply word wrap (visual novel lines)"
-
     def get_export_message(self, count: int) -> str:
         return (f"Exported {count} translations to .ks files.\n"
                 f"Original files backed up in scenario_original/.")
@@ -503,8 +504,11 @@ def detect_engine(path: str) -> type[EngineHandler] | None:
     Returns the handler CLASS (not instance) or None if unrecognized.
     """
     for handler_cls in ENGINE_REGISTRY:
-        if handler_cls.detect(path):
-            return handler_cls
+        try:
+            if handler_cls.detect(path):
+                return handler_cls
+        except Exception:
+            log.debug("Detection failed for %s", handler_cls.key, exc_info=True)
     return None
 
 

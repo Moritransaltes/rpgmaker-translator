@@ -970,6 +970,7 @@ class WolfRPGParser:
         self.maps: list[WolfMap] = []
         self.common_events: Optional[WolfCommonEvents] = None
         self.databases: list[WolfDatabase] = []
+        self.context_size: int = 3
 
     # ── Detection ─────────────────────────────────────────────────────
 
@@ -995,8 +996,10 @@ class WolfRPGParser:
 
     # ── Loading ───────────────────────────────────────────────────────
 
-    def load_project(self, folder: str, context_size: int = 3) -> list[TranslationEntry]:
+    def load_project(self, folder: str, context_size: int | None = None) -> list[TranslationEntry]:
         """Load all translatable strings from a Wolf RPG game."""
+        if context_size is not None:
+            self.context_size = context_size
         self.game_dir = Path(folder)
         entries: list[TranslationEntry] = []
 
@@ -1014,7 +1017,7 @@ class WolfRPGParser:
                     wolf_map = WolfMap(mps_file)
                     wolf_map.load()
                     self.maps.append(wolf_map)
-                    entries.extend(self._extract_map_entries(wolf_map, context_size))
+                    entries.extend(self._extract_map_entries(wolf_map, self.context_size))
                 except Exception as e:
                     print(f'Warning: failed to parse {mps_file.name}: {e}')
 
@@ -1025,7 +1028,7 @@ class WolfRPGParser:
             try:
                 self.common_events = WolfCommonEvents(ce_path)
                 self.common_events.load()
-                entries.extend(self._extract_ce_entries(context_size))
+                entries.extend(self._extract_ce_entries(self.context_size))
             except Exception as e:
                 print(f'Warning: failed to parse CommonEvent.dat: {e}')
 

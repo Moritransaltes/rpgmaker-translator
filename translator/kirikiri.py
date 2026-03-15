@@ -245,9 +245,10 @@ class KirikiriParser:
     def __init__(self):
         self.context_size = 3
 
-    def load_project(self, project_dir: str, context_size: int = 3) -> list[TranslationEntry]:
+    def load_project(self, project_dir: str, context_size: int | None = None) -> list[TranslationEntry]:
         """Parse all .ks files from a Kirikiri project."""
-        self.context_size = context_size
+        if context_size is not None:
+            self.context_size = context_size
         scenario_dir = self._find_scenario_dir(project_dir)
         if not scenario_dir:
             log.warning("No scenario directory found in %s", project_dir)
