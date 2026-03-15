@@ -926,6 +926,10 @@ class MainWindow(QMainWindow):
         if not self.handler.has_actors:
             self._srpg_pre_translate_title(path)
 
+        # Offer window scaler for VX Ace projects
+        if self._project_type == "rpgmaker_ace":
+            self._offer_vxace_scaler(path)
+
         # Offer wizard vs manual mode for new projects
         wizard_chosen = False
         wizard_chosen = self._show_wizard_choice()
@@ -1439,6 +1443,89 @@ class MainWindow(QMainWindow):
             # Don't duplicate into project glossary if already in general
             if jp not in self._general_glossary:
                 self.project.glossary[jp] = en
+
+    def _offer_vxace_scaler(self, path: str):
+        """Offer to inject a window scaler script for VX Ace games."""
+        try:
+            from ..vxace_scaler import (
+                detect_resolution, inject_scaler, is_already_injected,
+                HAS_RUBYMARSHAL,
+            )
+        except ImportError:
+            return
+        if not HAS_RUBYMARSHAL:
+            return
+
+        scripts_path = os.path.join(path, "Data", "Scripts.rvdata2")
+        if not os.path.exists(scripts_path):
+            return
+
+        already = is_already_injected(scripts_path)
+        base_w, base_h = detect_resolution(scripts_path)
+
+        # Build the dialog
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Window Scaler")
+        layout = QVBoxLayout(dlg)
+
+        if already:
+            layout.addWidget(QLabel(
+                f"Window scaler already installed.\n"
+                f"Base resolution: {base_w}x{base_h}\n"
+                f"Use PgUp/PgDn in-game to resize."
+            ))
+            btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+            btn_box.accepted.connect(dlg.accept)
+            layout.addWidget(btn_box)
+            dlg.exec()
+            return
+
+        layout.addWidget(QLabel(
+            f"This VX Ace game runs at {base_w}x{base_h}.\n\n"
+            f"Inject a window scaler script?\n"
+            f"  - PgUp / PgDn to resize in-game\n"
+            f"  - Scales: 1x, 1.5x, 2x, 2.5x, 3x\n\n"
+            f"Pick the default scale on launch:"
+        ))
+
+        from PyQt6.QtWidgets import QComboBox
+        combo = QComboBox()
+        scales = [
+            ("1x (original)", 1.0),
+            (f"1.5x ({int(base_w*1.5)}x{int(base_h*1.5)})", 1.5),
+            (f"2x ({base_w*2}x{base_h*2})", 2.0),
+            (f"2.5x ({int(base_w*2.5)}x{int(base_h*2.5)})", 2.5),
+            (f"3x ({base_w*3}x{base_h*3})", 3.0),
+        ]
+        for label, _ in scales:
+            combo.addItem(label)
+        combo.setCurrentIndex(2)  # Default to 2x
+        layout.addWidget(combo)
+
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        btn_box.accepted.connect(dlg.accept)
+        btn_box.rejected.connect(dlg.reject)
+        layout.addWidget(btn_box)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        chosen_scale = scales[combo.currentIndex()][1]
+        ok = inject_scaler(scripts_path, default_scale=chosen_scale)
+        if ok:
+            self.statusbar.showMessage(
+                f"Window scaler injected: {base_w}x{base_h} default "
+                f"{chosen_scale}x — PgUp/PgDn to resize in-game", 8000
+            )
+        else:
+            QMessageBox.warning(
+                self, "Scaler Error",
+                "Failed to inject window scaler.\n"
+                "Check that Data/Scripts.rvdata2 is writable."
+            )
 
     def _srpg_pre_translate_title(self, path: str):
         """Pre-translate game title and offer folder rename for SRPG Studio."""

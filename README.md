@@ -237,7 +237,7 @@ All engines auto-detect when you open a game folder — no manual configuration 
 
 > **RPG Maker MV/MZ** — Separate engine handlers with independent system prompts. Full plugin extraction, speaker detection, namebox handling, face-aware word wrap, and patch zip export.
 
-> **RPG Maker VX Ace** — Parses Ruby Marshal binary files via `rubymarshal`. Full database + event support (actors, items, skills, maps, common events, troops). Same two-stage DB → Dialogue workflow as MV/MZ.
+> **RPG Maker VX Ace** — Parses Ruby Marshal binary files via `rubymarshal`. Full database + event support (actors, items, skills, maps, common events, troops). Same two-stage DB → Dialogue workflow as MV/MZ. **Window Scaler** auto-injected on project open — VX Ace games run at tiny resolutions (544x416 or 640x480), so a Win32 API script is injected into `Scripts.rvdata2` that adds: PgUp/PgDn to scale the window (1x / 1.5x / 2x / 2.5x / 3x), F3 to cycle borderless fullscreen (ratio-kept → stretched → off). Pick your default scale in the dialog.
 
 > **RPG Maker 2000/2003** — LCF binary parser for `.ldb` and `.lmu` files. Word wrap at 50 chars/line. EasyRPG Player auto-downloaded on export for locale-free play on non-Japanese Windows.
 
