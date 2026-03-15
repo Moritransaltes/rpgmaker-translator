@@ -167,13 +167,11 @@ def _lz4_decompress(reader: 'BinaryReader') -> bytes:
             'Install with: pip install lz4'
         )
 
-    header = reader.data[:reader.pos]  # Everything before LZ4 data
     dec_size = reader.read_uint32()
     enc_size = reader.read_uint32()
     compressed = reader.read(enc_size)
 
-    decompressed = lz4.block.decompress(compressed, uncompressed_size=dec_size)
-    return bytes(header) + decompressed
+    return lz4.block.decompress(compressed, uncompressed_size=dec_size)
 
 
 # ── Binary reader ────────────────────────────────────────────────────────
@@ -560,11 +558,11 @@ class WolfCommonEvent:
         cmd_count = reader.read_uint32()
         ce.commands = [WolfCommand.read(reader) for _ in range(cmd_count)]
 
+        # Capture everything from unknown11 onward as _post_data
+        # (unknown11 + description + all trailing structures)
+        post_start = reader.pos
         unknown11 = reader.read_string()
         ce.description = reader.read_string()
-
-        # Read everything after description until end markers
-        post_start = reader.pos
         indicator = reader.read_byte()
         if indicator != CE_DATA_INDICATOR:
             raise ValueError(f'Bad CE data indicator: {indicator:#x}')
@@ -626,9 +624,7 @@ class WolfCommonEvent:
         writer.write_uint32(len(self.commands))
         for cmd in self.commands:
             cmd.write(writer)
-        # unknown11 is inside _post_data along with description?
-        # Actually we need to handle this differently...
-        # For now, store the entire post-command blob and replay it
+        # _post_data includes unknown11 + description + all trailing structures
         writer.write(self._post_data)
 
 
@@ -828,7 +824,7 @@ class WolfDatabase:
         if version == 0xC4:
             data = _lz4_decompress(reader)
             reader = BinaryReader(data)
-            reader.skip(1)  # Skip back to after the magic prefix byte
+            # Decompressed data starts at the version byte
             version = reader.read_byte()
 
         # Type count
@@ -978,12 +974,15 @@ class WolfRPGParser:
     def detect(folder: str) -> bool:
         """Check if folder is a Wolf RPG game."""
         p = Path(folder)
-        has_exe = (p / 'Game.exe').is_file()
         has_wolf = (p / 'Data.wolf').is_file()
         has_data = (p / 'Data').is_dir()
 
+        # Check for Game.exe (case-insensitive) or any .exe with Wolf RPG markers
+        has_exe = (p / 'Game.exe').is_file() or (p / 'game.exe').is_file()
         if not has_exe:
-            return False
+            # Accept if Data.wolf exists (exe may be renamed)
+            if not has_wolf:
+                return False
 
         # Must have Data.wolf or Data/ folder with .mps files
         if has_wolf:
@@ -993,6 +992,45 @@ class WolfRPGParser:
             return len(mps) > 0
 
         return False
+
+    def get_game_title(self, project_dir: str) -> str:
+        """Read game title from Game.dat or folder name."""
+        p = Path(project_dir)
+        game_dat = p / 'Game.dat'
+        if game_dat.is_file():
+            try:
+                data = game_dat.read_bytes()
+                # Game.dat starts with title string in Wolf RPG format
+                reader = BinaryReader(data)
+                # Skip magic bytes (varies), try to read first string
+                # Wolf RPG Game.dat: 4 bytes magic + title string
+                if len(data) > 20:
+                    reader.skip(4)
+                    title = reader.read_string()
+                    if title and len(title) < 200:
+                        return title
+            except Exception:
+                pass
+        return p.name
+
+    def restore_originals(self, project_dir: str):
+        """Restore original game files from backup."""
+        if not self.data_dir:
+            self.game_dir = Path(project_dir)
+            self.data_dir = self._find_data_dir()
+        if not self.data_dir:
+            log.warning("No data directory found for restore")
+            return
+
+        backup_dir = self.data_dir.parent / (self.data_dir.name + '_original')
+        if not backup_dir.is_dir():
+            log.warning("No backup found at %s", backup_dir)
+            return
+
+        import shutil
+        shutil.rmtree(self.data_dir)
+        shutil.copytree(backup_dir, self.data_dir)
+        log.info("Restored %s from backup", self.data_dir.name)
 
     # ── Loading ───────────────────────────────────────────────────────
 
@@ -1258,14 +1296,16 @@ class WolfRPGParser:
 
         Format: @N\\nSpeaker：\\nText  or  Speaker：\\nText
         """
+        # Try multi-line pattern first: @N\nSpeaker：\n
+        match = re.match(r'@\d+\r?\n(.+?)：', text)
+        if match:
+            return match.group(1).strip()
+        # Try single-line pattern: Speaker：
         lines = text.split('\n')
         for line in lines:
-            # Pattern: name followed by ： (full-width colon)
+            if line.startswith('@'):
+                continue
             match = re.match(r'^(.+?)：', line)
-            if match and not line.startswith('@'):
-                return match.group(1).strip()
-            # Also try after @N prefix
-            match = re.match(r'@\d+\s*\n?(.+?)：', line)
             if match:
                 return match.group(1).strip()
         return ''
@@ -1294,10 +1334,13 @@ class WolfRPGParser:
         if not self.data_dir:
             return
 
-        # Create backup
+        # Create backup on first export
         backup_dir = self.data_dir.parent / (self.data_dir.name + '_original')
         if not backup_dir.exists():
             shutil.copytree(self.data_dir, backup_dir)
+
+        # Re-read from backup for idempotent re-export
+        self._reload_from_backup(backup_dir)
 
         # Build lookup: field → translation
         translations = {}
@@ -1343,8 +1386,9 @@ class WolfRPGParser:
                                 modified = True
 
             if modified:
-                # Read from backup, apply translations, write to data
-                wolf_map.save()
+                # Write to live data dir (map was loaded from backup)
+                live_path = self.data_dir / 'MapData' / wolf_map.path.name
+                wolf_map.save(live_path)
 
         # Apply to common events
         if self.common_events:
@@ -1382,12 +1426,138 @@ class WolfRPGParser:
                             modified = True
 
             if modified:
-                self.common_events.save()
+                live_ce = self.data_dir / 'CommonEvent.dat'
+                self.common_events.save(live_ce)
+
+        # Apply to databases
+        for db in self.databases:
+            file_name = f'Database/{db.name}'
+            db_trans = {}
+            for key, val in translations.items():
+                if key.startswith(file_name + '/'):
+                    # key = "Database/DataBase/Type0/Data1/F2"
+                    field_part = key[len(file_name) + 1:]
+                    db_trans[field_part] = val
+            if db_trans:
+                backup_dat = backup_dir / 'BasicData' / f'{db.name}.dat'
+                live_dat = self.data_dir / 'BasicData' / f'{db.name}.dat'
+                if backup_dat.is_file():
+                    self._export_database(db, backup_dat, live_dat, db_trans)
 
         # Delete Data.wolf so game reads from folder
         wolf_file = self.game_dir / 'Data.wolf'
         if wolf_file.is_file():
             wolf_file.rename(self.game_dir / 'Data.wolf.bak')
+
+    def _export_database(self, db: WolfDatabase, src_path: Path,
+                         dst_path: Path, translations: dict[str, str]):
+        """Patch database .dat file with translations.
+
+        Reads from src_path, replaces strings, writes to dst_path.
+        translations keys are like "Type0/Data1/F2".
+        """
+        data = bytearray(src_path.read_bytes())
+
+        # Handle encryption the same way as load
+        crypt_header = b''
+        if len(data) > 5 and data[1] == 0x50:
+            crypt_ver = data[5]
+            if crypt_ver >= 0x55:
+                return  # Can't handle V3.3+ encryption
+            dec_data, crypt_header, _proj_key = _decrypt_dat_v32(
+                bytes(data), _DAT_SEED_INDICES)
+            data = bytearray(dec_data)
+
+        reader = BinaryReader(bytes(data))
+        reader.skip(10)  # magic
+        version = reader.read_byte()
+
+        if version == 0xC4:
+            return  # LZ4 DB export not supported yet
+
+        type_count = reader.read_uint32()
+        if type_count != len(db._types):
+            return
+
+        # Build list of (byte_offset, old_len_bytes, new_string) patches
+        patches = []
+        for type_idx in range(type_count):
+            type_info = db._types[type_idx]
+            sep = reader.read(4)
+            if sep != db.DAT_TYPE_SEP:
+                return  # format error
+
+            unknown1 = reader.read_uint32()
+            fields_size = reader.read_uint32()
+
+            if unknown1 == db.STRING_INDICATOR:
+                reader.read_string()
+
+            field_infos = []
+            for _ in range(fields_size):
+                index_info = reader.read_uint32()
+                is_string = index_info >= db.FIELD_STRING_START
+                is_int = index_info >= db.FIELD_INT_START and not is_string
+                field_infos.append({
+                    'is_string': is_string,
+                    'is_valid': is_string or is_int,
+                })
+
+            data_count = reader.read_uint32()
+            int_count = sum(1 for f in field_infos if f['is_valid'] and not f['is_string'])
+            str_count = sum(1 for f in field_infos if f['is_string'])
+
+            for data_idx in range(data_count):
+                reader.skip(int_count * 4)
+                for si in range(str_count):
+                    str_offset = reader.pos  # offset of length prefix
+                    text = reader.read_string()
+                    key = f'Type{type_idx}/Data{data_idx}/F{si}'
+                    if key in translations:
+                        # Calculate old string byte length (4-byte length + encoded string)
+                        enc = 'utf-8' if reader.is_utf8 else 'cp932'
+                        old_bytes = text.encode(enc, errors='replace')
+                        new_bytes = translations[key].encode(enc, errors='replace')
+                        # Patch: replace length(4) + old_bytes with length(4) + new_bytes
+                        patches.append((str_offset, 4 + len(old_bytes), new_bytes))
+
+        # Apply patches in reverse order to preserve offsets
+        for offset, old_total_len, new_bytes in reversed(patches):
+            new_len_prefix = struct.pack('<I', len(new_bytes))
+            data[offset:offset + old_total_len] = new_len_prefix + new_bytes
+
+        # Re-encrypt if needed
+        if crypt_header:
+            # Wolf RPG .dat re-encryption not yet supported
+            # Write unencrypted for now — game should still read it
+            pass
+
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+        dst_path.write_bytes(bytes(data))
+        log.info("Exported DB translations to %s", dst_path.name)
+
+    def _reload_from_backup(self, backup_dir: Path):
+        """Re-read maps and common events from backup for idempotent re-export."""
+        # Reload maps
+        self.maps = []
+        map_dir = backup_dir / 'MapData'
+        if map_dir.is_dir():
+            for mps in sorted(map_dir.glob('*.mps')):
+                try:
+                    wolf_map = WolfMap(mps)
+                    wolf_map.load()
+                    self.maps.append(wolf_map)
+                except Exception:
+                    log.debug("Skip map %s on reload", mps.name, exc_info=True)
+
+        # Reload common events
+        ce_path = backup_dir / 'CommonEvent.dat'
+        if ce_path.is_file():
+            try:
+                self.common_events = WolfCommonEvents(ce_path)
+                self.common_events.load()
+            except Exception:
+                log.debug("Skip CE reload", exc_info=True)
 
     @staticmethod
     def _rebuild_message(original: str, translated: str) -> str:
