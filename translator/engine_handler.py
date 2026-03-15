@@ -379,7 +379,7 @@ class KirikiriHandler(EngineHandler):
 
 class CrowdHandler(EngineHandler):
     key = "crowd"
-    display_name = "Crowd"
+    display_name = "Crowd (Experimental)"
     backup_description = "sce_original/"
 
     has_speaker_processing = True

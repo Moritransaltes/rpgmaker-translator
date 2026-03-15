@@ -568,7 +568,15 @@ class CrowdParser:
 
     @staticmethod
     def _wordwrap(text: str, width: int = 38) -> str:
-        """Wrap text at word boundaries, inserting @n as line breaks."""
+        """Wrap text at word boundaries, inserting @n as line breaks.
+
+        The Crowd engine preserves single ASCII spaces between words
+        but treats double-spaces as page/line breaks (confirmed via
+        disassembly of the text rendering function).
+
+        Width of 38 matches Peach Princess's official XC2 English
+        localization line budget.
+        """
         lines = []
         for paragraph in text.split('\n'):
             words = paragraph.split(' ')
@@ -585,29 +593,6 @@ class CrowdParser:
                 lines.append(current_line)
         return '@n'.join(lines)
 
-    @staticmethod
-    def _hyphen_wrap(text: str, width: int = 40) -> str:
-        """Join words with hyphens in chunks, using space as line separator.
-
-        The Crowd engine treats ASCII space as a line break.
-        Hyphens join words within a line, spaces separate lines.
-        """
-        chunks = []
-        for paragraph in text.split('\n'):
-            words = paragraph.split(' ')
-            current = ''
-            for word in words:
-                if not current:
-                    current = word
-                elif len(current) + 1 + len(word) <= width:
-                    current += '-' + word
-                else:
-                    chunks.append(current)
-                    current = word
-            if current:
-                chunks.append(current)
-        return ' '.join(chunks)
-
     def _apply_translation(self, content: str, entry: TranslationEntry) -> str:
         """Replace the Japanese text in content with the translation."""
         # Skip SELECT command lines — these have structural SP "choice" * "choice"
@@ -617,10 +602,9 @@ class CrowdParser:
 
         translation = self._sanitize_translation(entry.translation)
 
-        # Crowd engine treats ASCII space (0x20) as a line/page break.
-        # Join words with hyphens in ~40-char chunks, space between chunks.
-        translation = self._hyphen_wrap(translation, 40)
-        translation = translation.replace('\n', ' ')
+        # Wrap English text at ~38 chars (matching Peach Princess's official
+        # XC2 English localization) using @n for in-engine line breaks.
+        translation = self._wordwrap(translation, 38)
 
         # 1. Voice + speaker: w000001a@!Speaker@n text
         voice_m = _VOICE_SPEAKER.search(content)

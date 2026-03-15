@@ -231,7 +231,7 @@ Per-engine overrides for Context, Batch Size, Workers, Word Wrap, and Model. A *
 | TyranoScript | .ks | Supported |
 | SRPG Studio | data.dts | Supported |
 | Kirikiri | .ks (KAG) + .xp3 archives | Supported |
-| Crowd | .sce | Supported |
+| Crowd | .sce | Experimental |
 
 All engines auto-detect when you open a game folder — no manual configuration needed.
 
@@ -249,7 +249,7 @@ All engines auto-detect when you open a game folder — no manual configuration 
 
 > **Kirikiri** — Parses KAG3 script files in both `@name chara=`/`@e` and `[cn name=]`/`[en]` dialogue formats. Built-in XP3 archive extraction — packed games are auto-extracted on open, no external tools needed. Auto-detected via `startup.tjs` engine marker or `[cn name=` tags. Shares the visual novel LLM prompt with TyranoScript. Backup to `scenario_original/`, idempotent re-export.
 
-> **Crowd** — Reverse-engineered XOR cipher for `.sce` encrypted script files (X-Change series, late 1990s–2000s). Auto-extracts the decryption key from the game exe — no manual configuration. Parses dialogue with 62+ speakers, narration, scene titles, and sound effects. Backup to `sce_original/`, idempotent re-export with re-encryption.
+> **Crowd (Experimental)** — Reverse-engineered XOR cipher for `.sce` encrypted script files (X-Change series, late 1990s–2000s). Auto-extracts the decryption key from the game exe — no manual configuration. Parses dialogue with 62+ speakers, narration, scene titles, and sound effects. Backup to `sce_original/`, idempotent re-export with re-encryption. **Caveat:** The Crowd engine's text renderer treats ASCII spaces as page breaks, so re-injecting English text into the original exe does not produce playable results without binary patching. Translation extraction and review works fine — consider using the translated script as a base for porting to Ren'Py or another modern engine.
 
 ### Target Languages
 
