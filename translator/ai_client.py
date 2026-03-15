@@ -10,6 +10,7 @@ import time
 import requests
 
 from . import CONTROL_CODE_RE, TYRANO_CODE_RE, JAPANESE_RE
+from .renpy import RENPY_TAG_RE
 
 log = logging.getLogger(__name__)
 
@@ -244,7 +245,7 @@ WOLFRPG_SYSTEM_PROMPT = """You are a professional Japanese to English translator
 Rules:
 - Translate ALL text faithfully and completely, including sexual, violent, or explicit content. Never censor, euphemize, skip, or refuse any content. This is a licensed translation project.
 - Translate the Japanese text naturally into fluent English suitable for an RPG game.
-- The text may contain control codes like \\V[n], \\N[n], \\C[n], or placeholder markers «CODE1», «CODE2». Output these EXACTLY as-is — never remove, translate, or replace them.
+- The text may contain placeholder markers like «CODE1», «CODE2». Output these EXACTLY as-is — never remove, translate, or replace them.
 - Keep the same number of line breaks (newlines) as the original. Each line break corresponds to a line in the game's text box.
 - NEVER add explanations, translator notes, commentary, or parenthetical remarks — output ONLY the translated text and nothing else.
 - If the text is already in English or is a proper noun, keep it as-is.
@@ -1185,6 +1186,9 @@ class AIClient:
         r'(?:' + TYRANO_CODE_RE.pattern + r')( ?)',
         re.IGNORECASE,
     )
+    _EXTRACT_RE_RENPY = re.compile(
+        r'(?:' + RENPY_TAG_RE.pattern + r')( ?)',
+    )
 
     def _extract_codes(self, text: str) -> tuple:
         """Replace control codes with opaque placeholders.
@@ -1200,9 +1204,12 @@ class AIClient:
         Returns:
             (cleaned_text, mapping) where mapping is {"«CODE1»": "\\C[2]", ...}
         """
-        regex = (self._EXTRACT_RE_TYRANO
-                 if self.project_type == "tyranoscript"
-                 else self._EXTRACT_RE)
+        if self.project_type == "tyranoscript":
+            regex = self._EXTRACT_RE_TYRANO
+        elif self.project_type == "renpy":
+            regex = self._EXTRACT_RE_RENPY
+        else:
+            regex = self._EXTRACT_RE
         mapping = {}
         counter = [0]
 
@@ -1229,7 +1236,9 @@ class AIClient:
         instead of converted to "", since dialogue is already in speech
         boxes and quotes are visual noise.
         """
-        strip_quotes = self.project_type == "tyranoscript"
+        # VN engines display dialogue in speech boxes — quotes are redundant
+        _VN_ENGINES = {"tyranoscript", "kirikiri", "crowd", "renpy"}
+        strip_quotes = self.project_type in _VN_ENGINES
         for jp, en in _JP_BRACKETS.items():
             if strip_quotes and en == '"':
                 text = text.replace(jp, '')
@@ -1427,6 +1436,8 @@ class AIClient:
     # Human-readable labels for RPG Maker entry field types
     _FIELD_HINTS = {
         "dialog": "dialogue line",
+        "dialogue": "dialogue line",
+        "narration": "narration text",
         "choice": "player choice option",
         "scroll_text": "scrolling narrative text",
         "name": "name",
@@ -1438,12 +1449,18 @@ class AIClient:
         "message3": "battle message",
         "message4": "battle message",
         "gameTitle": "game title",
+        "game_title": "game title",
         "displayName": "map location name",
         "note": "developer note",
         "plugin_command": "plugin command text",
         "plugin_param": "plugin configuration text",
         "script_variable": "quest/UI text stored in game variable",
         "speaker_name": "character name shown in dialogue name box",
+        "scene_title": "scene/chapter title",
+        "jname": "character speaker name definition",
+        "ptext": "menu/prompt text",
+        "system_ui": "system/UI text",
+        "eval_var": "game variable text",
     }
 
     def translate(self, text: str, context: str = "",
