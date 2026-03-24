@@ -40,6 +40,7 @@ class PostProcessResult:
     missing_spaces: int = 0
     restored_line_breaks: int = 0
     split_words: int = 0
+    compound_words: int = 0
     total_entries_fixed: int = 0
     retranslate_ids: list = None  # Entry IDs that need LLM retranslation
 
@@ -876,6 +877,87 @@ def _try_merge_fragments(groups: list[str]) -> str | None:
     return None
 
 
+# Common LLM compound word errors — both directions:
+# Joined: "eventhough" → "even though"
+# Split: "under stood" → "understood", "every one" → "everyone"
+_COMPOUND_FIXES = {
+    # Wrongly joined
+    "eventhough": "even though",
+    "evenif": "even if",
+    "evenso": "even so",
+    "alot": "a lot",
+    "abit": "a bit",
+    "infact": "in fact",
+    "aswell": "as well",
+    "ofcourse": "of course",
+    "atleast": "at least",
+    "infront": "in front",
+    "eachother": "each other",
+    "noone": "no one",
+    "inspite": "in spite",
+    "inorder": "in order",
+    "asif": "as if",
+    # Wrongly split
+    "under stood": "understood",
+    "with out": "without",
+    "some thing": "something",
+    "every thing": "everything",
+    "any thing": "anything",
+    "no thing": "nothing",
+    "some one": "someone",
+    "every one": "everyone",
+    "any one": "anyone",
+    "my self": "myself",
+    "your self": "yourself",
+    "him self": "himself",
+    "her self": "herself",
+    "them selves": "themselves",
+    "our selves": "ourselves",
+    "mean while": "meanwhile",
+    "al ready": "already",
+    "to gether": "together",
+    "over come": "overcome",
+    "be come": "become",
+    "be cause": "because",
+    "how ever": "however",
+    "al though": "although",
+    "break fast": "breakfast",
+    "some times": "sometimes",
+    "every where": "everywhere",
+    "any where": "anywhere",
+    "no where": "nowhere",
+    "some where": "somewhere",
+}
+
+# Build regex: match each key as a whole word (case-insensitive)
+_COMPOUND_RE = re.compile(
+    r'\b(' + '|'.join(re.escape(k) for k in _COMPOUND_FIXES) + r')\b',
+    re.IGNORECASE,
+)
+
+
+def _fix_compound_words(entry) -> bool:
+    """Fix LLM compound word errors (joined or split)."""
+    trans = entry.translation
+    if not trans:
+        return False
+
+    def _replace(m):
+        word = m.group(0)
+        key = word.lower()
+        fix = _COMPOUND_FIXES.get(key, word)
+        # Preserve original capitalization
+        if word[0].isupper() and fix[0].islower():
+            fix = fix[0].upper() + fix[1:]
+        return fix
+
+    new = _COMPOUND_RE.sub(_replace, trans)
+    if new != trans:
+        entry.translation = new
+        return True
+    return False
+
+
 def _fix_split_words(entry) -> bool:
     """Rejoin words that the LLM split with spaces.
 
@@ -1015,6 +1097,10 @@ def run_post_processing(entries: list, verbose: bool = False,
 
         if _fix_missing_spaces(entry):
             result.missing_spaces += 1
+            entry_fixed = True
+
+        if _fix_compound_words(entry):
+            result.compound_words += 1
             entry_fixed = True
 
         if _fix_split_words(entry):
