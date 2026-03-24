@@ -40,11 +40,13 @@ from . import JAPANESE_RE
 
 log = logging.getLogger(__name__)
 
-# Speaker tags — two common KAG conventions:
+# Speaker tags — three common KAG conventions:
 #   @name chara="Speaker Name"           (KAG3 style)
 #   [cn name="Speaker" voice="..."]      (alternate KAG style)
+#   【Speaker Name】                      (full-width bracket style)
 _NAME_TAG = re.compile(r'@name\s+chara="([^"]*)"', re.IGNORECASE)
 _CN_TAG = re.compile(r'\[cn\s+name="([^"]*)"', re.IGNORECASE)
+_BRACKET_SPEAKER = re.compile(r'^【([^】]+)】\s*$')
 
 # Voice cue: @PV storage="voice_file"
 _VOICE_TAG = re.compile(r'@PV\s+storage="([^"]*)"', re.IGNORECASE)
@@ -421,23 +423,26 @@ class KirikiriParser:
         if os.path.exists(os.path.join(path, "data", "startup.tjs")):
             return True
 
-        # Check for data/scenario/*.ks with @name chara= (KAG, not TyranoScript)
+        # Check for data/scenario/**/*.ks with KAG markers (recursive)
         scenario_dir = os.path.join(path, "data", "scenario")
         if os.path.isdir(scenario_dir):
-            for name in os.listdir(scenario_dir):
-                if name.lower().endswith(".ks"):
-                    try:
-                        ks_path = os.path.join(scenario_dir, name)
-                        with open(ks_path, "rb") as f:
-                            head = f.read(4096)
-                        text = head.decode("cp932", errors="replace")
-                        text_lower = text.lower()
-                        # KAG3: @name chara=  |  Alternate: [cn name=
-                        if (("@name " in text_lower and "chara=" in text_lower) or
-                                ("[cn " in text_lower and "name=" in text_lower)):
-                            return True
-                    except Exception:
-                        continue
+            from pathlib import Path
+            for ks_path in Path(scenario_dir).rglob("*.ks"):
+                try:
+                    with open(ks_path, "rb") as f:
+                        head = f.read(4096)
+                    text = head.decode("cp932", errors="replace")
+                    text_lower = text.lower()
+                    # KAG3 markers: @name chara=, [cn name=, [begintrans],
+                    # [endtrans], startup.tjs reference, or 【】 speaker brackets
+                    if (("@name " in text_lower and "chara=" in text_lower) or
+                            ("[cn " in text_lower and "name=" in text_lower) or
+                            "[begintrans]" in text_lower or
+                            "[endtrans" in text_lower or
+                            "【" in text):
+                        return True
+                except Exception:
+                    continue
 
         # Check for XP3 archives containing scenario .ks files
         if find_scenario_xp3(path):
@@ -595,6 +600,104 @@ class KirikiriParser:
                         recent_context.append(ctx_line)
                         if len(recent_context) > self.context_size:
                             recent_context.pop(0)
+
+                i = j
+                continue
+
+            # 【Speaker】 bracket format — speaker on own line, dialogue follows
+            bracket_m = _BRACKET_SPEAKER.match(stripped)
+            if bracket_m:
+                speaker = bracket_m.group(1).replace("\u3000", "")
+                text_lines = []
+                first_text_line = -1
+                j = i + 1
+                while j < len(lines):
+                    tline = lines[j].rstrip()
+                    tstripped = tline.strip()
+                    if not tstripped:
+                        # Blank line = end of dialogue block
+                        j += 1
+                        break
+                    # Stop at next speaker, command, or label
+                    if (_BRACKET_SPEAKER.match(tstripped) or
+                            _LABEL_LINE.match(tstripped) or
+                            _COMMENT_LINE.match(tstripped)):
+                        break
+                    if _COMMAND_LINE.match(tstripped) and not _is_inline_tag(tstripped):
+                        break
+                    if first_text_line < 0:
+                        first_text_line = j
+                    text_lines.append(tline)
+                    j += 1
+
+                if text_lines:
+                    full_text = "\n".join(text_lines)
+                    field = "narration" if speaker in ("地", "ト書き") else "dialogue"
+                    display_speaker = "" if field == "narration" else speaker
+
+                    if JAPANESE_RE.search(full_text) or self._has_translatable_text(full_text):
+                        ctx_parts = []
+                        if current_label:
+                            ctx_parts.append(f"[Label: {current_label}]")
+                        ctx_parts.extend(recent_context[-self.context_size:])
+                        entries.append(TranslationEntry(
+                            id=f"{rel_path}/{field}/{first_text_line}",
+                            file=rel_path,
+                            field=field,
+                            original=full_text,
+                            context="\n".join(ctx_parts),
+                            namebox=display_speaker,
+                        ))
+                        ctx_line = (f"[{display_speaker}] {full_text}"
+                                    if display_speaker else full_text)
+                        recent_context.append(ctx_line)
+                        if len(recent_context) > self.context_size:
+                            recent_context.pop(0)
+
+                i = j
+                continue
+
+            # Plain text lines (narration without speaker tag)
+            # Only if the line has Japanese and isn't a command
+            if (not _COMMAND_LINE.match(stripped) and
+                    not _LABEL_LINE.match(stripped) and
+                    stripped and JAPANESE_RE.search(stripped)):
+                # Collect consecutive plain text lines
+                text_lines = [line]
+                first_text_line = i
+                j = i + 1
+                while j < len(lines):
+                    tline = lines[j].rstrip()
+                    tstripped = tline.strip()
+                    if not tstripped:
+                        j += 1
+                        break
+                    if (_COMMAND_LINE.match(tstripped) or
+                            _LABEL_LINE.match(tstripped) or
+                            _COMMENT_LINE.match(tstripped) or
+                            _BRACKET_SPEAKER.match(tstripped)):
+                        break
+                    if _NAME_TAG.match(tstripped) or _CN_TAG.match(tstripped):
+                        break
+                    text_lines.append(tline)
+                    j += 1
+
+                full_text = "\n".join(text_lines)
+                if JAPANESE_RE.search(full_text):
+                    ctx_parts = []
+                    if current_label:
+                        ctx_parts.append(f"[Label: {current_label}]")
+                    ctx_parts.extend(recent_context[-self.context_size:])
+                    entries.append(TranslationEntry(
+                        id=f"{rel_path}/narration/{first_text_line}",
+                        file=rel_path,
+                        field="narration",
+                        original=full_text,
+                        context="\n".join(ctx_parts),
+                    ))
+                    recent_context.append(full_text)
+                    if len(recent_context) > self.context_size:
+                        recent_context.pop(0)
 
                 i = j
                 continue

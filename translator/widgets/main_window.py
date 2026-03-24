@@ -855,8 +855,11 @@ class MainWindow(QMainWindow):
                 "  - RPG Maker VX Ace (Data/*.rvdata2)\n"
                 "  - RPG Maker 2000/2003 (RPG_RT.ldb)\n"
                 "  - Wolf RPG Editor (Data.wolf / Game.exe)\n"
+                "  - Kirikiri/KAG (data/scenario/*.ks + .xp3)\n"
                 "  - TyranoScript (data/scenario/*.ks)\n"
-                "  - SRPG Studio (data.dts)",
+                "  - Ren'Py (game/*.rpy)\n"
+                "  - SRPG Studio (data.dts)\n"
+                "  - Crowd (*.sce)",
             )
             return
 
