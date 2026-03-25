@@ -116,6 +116,9 @@ class TranslationWizard(QDialog):
         self.cb_db = QCheckBox("1. Translate database (names, items, skills, terms)")
         self.cb_dialogue = QCheckBox("2. Translate dialogue and events")
         self.cb_cleanup = QCheckBox("3. Clean up artifacts (spacing, codes, capitalization)")
+        self.cb_fix_caps = QCheckBox("    Fix mid-sentence capitalization (aggressive)")
+        self.cb_fix_caps.setToolTip("Lowercase words wrongly capitalized mid-sentence in dialogue.\nSkips names, glossary terms, and sentence starts.")
+        self.cb_fix_caps.setChecked(False)
         self.cb_retranslate = QCheckBox("4. Retranslate broken entries")
         self.cb_wordwrap = QCheckBox("5. Apply word wrap")
         self.ww_spin = QSpinBox()
@@ -205,6 +208,9 @@ class TranslationWizard(QDialog):
                 steps_layout.addLayout(ww_row)
             else:
                 steps_layout.addWidget(cb)
+            # Add caps fix checkbox right after cleanup
+            if cb is self.cb_cleanup:
+                steps_layout.addWidget(self.cb_fix_caps)
 
         # Renumber visible steps dynamically
         step_num = 1
@@ -515,7 +521,8 @@ class TranslationWizard(QDialog):
         codes_fixed = self.mw._restore_missing_codes()
         result = run_post_processing(self.mw.project.entries,
                                      glossary=self.mw.project.glossary,
-                                     project_type=self.mw._project_type)
+                                     project_type=self.mw._project_type,
+                                     fix_capitals=self.cb_fix_caps.isChecked())
 
         # Quote/contraction cleanup
         quotes_fixed = 0

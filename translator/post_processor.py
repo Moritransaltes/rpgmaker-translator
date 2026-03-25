@@ -41,6 +41,7 @@ class PostProcessResult:
     restored_line_breaks: int = 0
     split_words: int = 0
     compound_words: int = 0
+    mid_sentence_caps: int = 0
     total_entries_fixed: int = 0
     retranslate_ids: list = None  # Entry IDs that need LLM retranslation
 
@@ -1031,9 +1032,48 @@ def _fix_split_words(entry) -> bool:
     return False
 
 
+def _fix_mid_sentence_caps(entry, known_names: set | None = None) -> bool:
+    """Lowercase words that are incorrectly capitalized mid-sentence.
+
+    Only applies to dialogue/scroll_text fields. Skips words after
+    sentence-ending punctuation, known names, and common abbreviations.
+    """
+    if entry.field not in ("dialog", "scroll_text"):
+        return False
+    trans = entry.translation
+    if not trans:
+        return False
+
+    # Words that should stay capitalized (common proper nouns / game terms)
+    _ALWAYS_CAPS = {
+        "I", "I'm", "I'll", "I've", "I'd",
+        "OK", "HP", "MP", "SP", "EXP", "ATK", "DEF", "AGI", "LUK",
+        "NPC", "RPG", "SNS", "CEO", "VIP",
+    }
+    safe = _ALWAYS_CAPS | (known_names or set())
+
+    # Pattern: lowercase letter + space + Capitalized word + space + lowercase
+    # This catches "the Garden was" but not "Mr. Garden" or "...Garden"
+    def _fix(m):
+        word = m.group(2)
+        if word in safe:
+            return m.group(0)
+        return m.group(1) + word.lower() + m.group(3)
+
+    new = re.sub(
+        r'([a-z] )([A-Z][a-z]{2,})( [a-z])',
+        _fix, trans)
+
+    if new != trans:
+        entry.translation = new
+        return True
+    return False
+
+
 def run_post_processing(entries: list, verbose: bool = False,
                         glossary: dict | None = None,
-                        project_type: str = "rpgmaker") -> PostProcessResult:
+                        project_type: str = "rpgmaker",
+                        fix_capitals: bool = False) -> PostProcessResult:
     """Run all post-processing fixes on a list of TranslationEntry objects.
 
     Modifies entries in-place. Returns a summary of fixes applied.
@@ -1046,6 +1086,14 @@ def run_post_processing(entries: list, verbose: bool = False,
     """
     result = PostProcessResult()
     fixed_ids = set()
+
+    # Build known names from glossary (should stay capitalized)
+    _known_names = set()
+    if glossary:
+        for en_term in glossary.values():
+            for word in en_term.split():
+                if word and word[0].isupper() and len(word) > 1:
+                    _known_names.add(word)
 
     for entry in entries:
         if entry.status not in ("translated", "reviewed"):
@@ -1155,6 +1203,10 @@ def run_post_processing(entries: list, verbose: bool = False,
 
         if _fix_trailing_whitespace(entry):
             result.trailing_whitespace += 1
+            entry_fixed = True
+
+        if fix_capitals and _fix_mid_sentence_caps(entry, _known_names):
+            result.mid_sentence_caps += 1
             entry_fixed = True
 
         if _fix_capitalize_terms(entry):
