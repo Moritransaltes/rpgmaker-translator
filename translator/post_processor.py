@@ -1185,12 +1185,13 @@ def run_post_processing(entries: list, verbose: bool = False,
             result.missing_spaces += 1
             entry_fixed = True
 
-        if _fix_compound_words(entry):
-            result.compound_words += 1
-            entry_fixed = True
-
+        # Split words FIRST, then compound — compound undoes wrong merges
         if _fix_split_words(entry):
             result.split_words += 1
+            entry_fixed = True
+
+        if _fix_compound_words(entry):
+            result.compound_words += 1
             entry_fixed = True
 
         if _fix_double_spaces(entry):
