@@ -1784,6 +1784,24 @@ class RPGMakerMVParser:
             elif code == CODE_SCROLL_TEXT_HEADER:
                 items.append(("A", (code, indent)))
 
+            elif code == CODE_PLUGIN_COMMAND_MZ and len(params) >= 4:
+                # Extract translatable plugin command text for alignment
+                plugin_name = params[0] if isinstance(params[0], str) else ""
+                allowed_keys = _MZ_PLUGIN_COMMAND_WHITELIST.get(plugin_name)
+                if allowed_keys:
+                    arg_str = params[3] if isinstance(params[3], str) else ""
+                    if arg_str:
+                        try:
+                            arg_dict = json.loads(arg_str)
+                        except (json.JSONDecodeError, ValueError):
+                            arg_dict = {}
+                        if isinstance(arg_dict, dict):
+                            for key in allowed_keys:
+                                val = arg_dict.get(key, "")
+                                if isinstance(val, str) and val.strip():
+                                    items.append(("P", val))
+                items.append(("A", (code, indent)))
+
             else:
                 # Generic structural anchor
                 items.append(("A", (code, indent)))
@@ -1820,9 +1838,9 @@ class RPGMakerMVParser:
 
         Returns list of (project_text, donor_text) tuples.
         """
-        # Count text blocks (D and C types)
-        proj_texts = [it for it in items_proj if it[0] in ("D", "C")]
-        donor_texts = [it for it in items_donor if it[0] in ("D", "C")]
+        # Count text blocks (D=dialog, C=choice, P=plugin command)
+        proj_texts = [it for it in items_proj if it[0] in ("D", "C", "P")]
+        donor_texts = [it for it in items_donor if it[0] in ("D", "C", "P")]
 
         if not proj_texts or not donor_texts:
             return []
@@ -1842,7 +1860,7 @@ class RPGMakerMVParser:
                 for k in range(i2 - i1):
                     p_item = items_proj[i1 + k]
                     d_item = items_donor[j1 + k]
-                    if p_item[0] in ("D", "C") and d_item[0] in ("D", "C"):
+                    if p_item[0] in ("D", "C", "P") and d_item[0] in ("D", "C", "P"):
                         pairs.append((p_item, d_item))
         return pairs
 
@@ -2082,6 +2100,12 @@ class RPGMakerMVParser:
                 for pc, dc in zip(p_choices, d_choices):
                     if pc and dc and pc != dc:
                         text_map[pc] = dc
+            elif p_item[0] == "P" and d_item[0] == "P":
+                # Pair plugin command text
+                p_text = p_item[1]
+                d_text = d_item[1]
+                if p_text and d_text and p_text != d_text:
+                    text_map[p_text] = d_text
 
     # ── Private: apply translation back to JSON ────────────────────────
 
