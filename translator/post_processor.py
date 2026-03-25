@@ -985,6 +985,11 @@ def _fix_compound_words(entry) -> bool:
         else:
             new = pattern.sub(replacement, new)
 
+    # Context-aware: "satin the/a/my/his/her/an" = "sat in the/a/..."
+    new = re.sub(
+        r'\bsatin\b(?=\s+(?:the|a|an|my|his|her|our|their|this|that|one|it))\b',
+        'sat in', new, flags=re.IGNORECASE)
+
     if new != trans:
         entry.translation = new
         return True
