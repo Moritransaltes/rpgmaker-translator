@@ -3282,14 +3282,151 @@ class MainWindow(QMainWindow):
             except OSError:
                 pass
 
-        QMessageBox.warning(
-            self, "Name Collisions Detected",
-            f"Found {len(collisions)} name collision(s) — different Japanese "
-            f"terms translated to the same English text.\n\n"
-            f"Review these in the table and retranslate or edit as needed "
-            f"before running Batch Dialogue.\n\n"
-            + "\n\n".join(lines) + extra
-            + "\n\nFull list saved to _name_collisions.txt",
+        # Collect colliding entry IDs for actions
+        colliding_ids: list[str] = []
+        for entry in self.project.entries:
+            if entry.status not in ("translated", "reviewed"):
+                continue
+            if not entry.translation:
+                continue
+            tl = entry.translation.strip()
+            if any(tl == en for en, _ in collisions):
+                colliding_ids.append(entry.id)
+
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QHBoxLayout, QPushButton, QScrollArea, QWidget
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Name Collisions Detected")
+        dlg.setMinimumSize(640, 480)
+        v = QVBoxLayout(dlg)
+
+        header = QLabel(
+            f"Found <b>{len(collisions)}</b> name collision(s) — different "
+            f"Japanese terms translated to the same English text.<br><br>"
+            f"Pick an action below."
+        )
+        header.setWordWrap(True)
+        v.addWidget(header)
+
+        body = QLabel("\n\n".join(lines) + extra)
+        body.setWordWrap(True)
+        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        wrap = QWidget(); wl = QVBoxLayout(wrap); wl.addWidget(body); wl.addStretch()
+        scroll.setWidget(wrap)
+        v.addWidget(scroll, 1)
+
+        v.addWidget(QLabel("Full list saved to _name_collisions.txt"))
+
+        # Action buttons
+        row = QHBoxLayout()
+        btn_view = QPushButton("View in Table")
+        btn_auto = QPushButton("Auto-fix (add disambiguator)")
+        btn_retry = QPushButton("Retranslate Now")
+        btn_close = QPushButton("Close")
+        for b in (btn_view, btn_auto, btn_retry, btn_close):
+            row.addWidget(b)
+        v.addLayout(row)
+
+        result = {"action": None}
+
+        def _view():
+            result["action"] = "view"
+            dlg.accept()
+
+        def _auto():
+            result["action"] = "auto"
+            dlg.accept()
+
+        def _retry():
+            result["action"] = "retry"
+            dlg.accept()
+
+        btn_view.clicked.connect(_view)
+        btn_auto.clicked.connect(_auto)
+        btn_retry.clicked.connect(_retry)
+        btn_close.clicked.connect(dlg.reject)
+        dlg.exec()
+
+        action = result["action"]
+        if action == "view":
+            self._filter_table_to_ids(colliding_ids)
+        elif action == "auto":
+            self._auto_fix_collisions(collisions)
+        elif action == "retry":
+            self._retranslate_collisions(colliding_ids)
+
+    def _filter_table_to_ids(self, entry_ids: list[str]):
+        """Filter the translation table to show only the given entry IDs."""
+        if not entry_ids:
+            return
+        id_set = set(entry_ids)
+        self.trans_table.set_id_filter(id_set)
+        # Clear file tree selection so the ID filter takes precedence
+        if hasattr(self.file_tree, "tree"):
+            self.file_tree.tree.clearSelection()
+        self.statusBar().showMessage(
+            f"Showing {len(id_set)} colliding entries", 8000
+        )
+
+    def _auto_fix_collisions(self, collisions: list):
+        """Append disambiguators to colliding translations to make them unique.
+
+        For each collision group ("Powerful Vibrator" → 3 different JP), keep
+        the first as-is and add " (2)", " (3)" to the rest.
+        """
+        # Build EN → list of (entry, jp) for fast lookup
+        en_to_entries: dict[str, list] = {}
+        for entry in self.project.entries:
+            if entry.status not in ("translated", "reviewed"):
+                continue
+            if not entry.translation:
+                continue
+            tl = entry.translation.strip()
+            en_to_entries.setdefault(tl, []).append(entry)
+
+        fixed = 0
+        for en, _ in collisions:
+            entries = en_to_entries.get(en, [])
+            # Group by original JP — entries with same JP keep same EN
+            seen_jp = {}
+            for entry in entries:
+                if entry.original not in seen_jp:
+                    seen_jp[entry.original] = []
+                seen_jp[entry.original].append(entry)
+            # Keep first JP group as-is, suffix the rest
+            counter = 2
+            for i, (jp, group) in enumerate(seen_jp.items()):
+                if i == 0:
+                    continue
+                suffix = f" ({counter})"
+                for entry in group:
+                    entry.translation = en + suffix
+                    fixed += 1
+                counter += 1
+
+        self._autosave()
+        self.trans_table.refresh()
+        self.statusBar().showMessage(
+            f"Auto-fixed {fixed} colliding entries with disambiguator suffixes",
+            8000,
+        )
+
+    def _retranslate_collisions(self, entry_ids: list[str]):
+        """Queue colliding entries for retranslation with a uniqueness hint."""
+        id_set = set(entry_ids)
+        targets = [e for e in self.project.entries if e.id in id_set]
+        if not targets:
+            return
+        # Reset to untranslated so batch picks them up
+        for entry in targets:
+            entry.status = "untranslated"
+        self._autosave()
+        self.trans_table.refresh()
+        QMessageBox.information(
+            self, "Retranslation Queued",
+            f"{len(targets)} entries marked untranslated. Run Batch DB or "
+            f"Batch All to retranslate them.",
         )
 
     def _on_checkpoint(self):

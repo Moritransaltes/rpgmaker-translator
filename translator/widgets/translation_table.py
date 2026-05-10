@@ -199,6 +199,7 @@ class TranslationTable(QWidget):
         self._entries = []           # current file-filtered subset (or all)
         self._visible_entries = []   # after search + status filter
         self._dupe_counts = {}       # original_text -> count (master view)
+        self._id_filter: set[str] | None = None  # Pinned IDs (overrides other filters)
         self._dark_mode = True  # Match main_window default
         self._speaker_lookup = {}  # JP→EN speaker name lookup
         self._filter_timer = QTimer(self)
@@ -223,7 +224,7 @@ class TranslationTable(QWidget):
         filter_row.addWidget(QLabel("Status:"))
         self.status_filter = QComboBox()
         self.status_filter.addItems(["All", "Untranslated", "Translated", "Reviewed", "Skipped"])
-        self.status_filter.currentTextChanged.connect(self._apply_filter)
+        self.status_filter.currentTextChanged.connect(self._on_filter_changed)
         filter_row.addWidget(self.status_filter)
 
         filter_row.addWidget(QLabel("Field:"))
@@ -245,14 +246,14 @@ class TranslationTable(QWidget):
             "Filter entries by field type.\n"
             "Useful for reviewing all choices, spotting plugin commands, etc."
         )
-        self.field_filter.currentTextChanged.connect(self._apply_filter)
+        self.field_filter.currentTextChanged.connect(self._on_filter_changed)
         filter_row.addWidget(self.field_filter)
 
         filter_row.addWidget(QLabel("Speaker:"))
         self.speaker_filter = QComboBox()
         self.speaker_filter.addItem("All Speakers")
         self.speaker_filter.setToolTip("Filter dialogue by speaker (from event headers)")
-        self.speaker_filter.currentTextChanged.connect(self._apply_filter)
+        self.speaker_filter.currentTextChanged.connect(self._on_filter_changed)
         filter_row.addWidget(self.speaker_filter)
 
         self.jp_check = QCheckBox("JP in translation")
@@ -483,7 +484,14 @@ class TranslationTable(QWidget):
 
     def _schedule_filter(self):
         """Debounce search — wait 250ms after last keystroke before filtering."""
+        # Clear pinned ID filter when user starts searching/filtering
+        self._id_filter = None
         self._filter_timer.start()
+
+    def _on_filter_changed(self):
+        """Filter dropdown changed — clear pinned ID filter and re-apply."""
+        self._id_filter = None
+        self._apply_filter()
 
     @staticmethod
     def _strip_codes(text: str) -> str:
@@ -506,6 +514,11 @@ class TranslationTable(QWidget):
         "Map Names":         {"displayName"},
     }
 
+    def set_id_filter(self, entry_ids: set[str] | None):
+        """Pin the table to show only entries with these IDs (or clear with None)."""
+        self._id_filter = entry_ids
+        self._apply_filter()
+
     def _apply_filter(self):
         """Filter visible entries by search text, status, field type, and QA checks.
 
@@ -513,6 +526,14 @@ class TranslationTable(QWidget):
         entries (ignoring file tree filter) so you can find text across the
         entire game.  Control codes are stripped before matching.
         """
+        # ID filter takes precedence — show only those entries, ignore others
+        if self._id_filter:
+            self._visible_entries = [e for e in self._all_entries if e.id in self._id_filter]
+            self._dupe_counts = {}
+            self._model.set_entries(self._visible_entries, self._dupe_counts)
+            self._update_stats()
+            return
+
         query = self.search_edit.text().lower()
         status = self.status_filter.currentText().lower()
         field_label = self.field_filter.currentText()
