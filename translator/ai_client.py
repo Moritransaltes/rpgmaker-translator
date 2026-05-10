@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import time
+from contextlib import contextmanager
 
 import requests
 
@@ -344,19 +345,31 @@ def is_sugoi_model(model_name: str) -> bool:
 
 
 _POLISH_SYSTEM_PROMPT = """\
-You are an English editor for a translated RPG game. The text was machine-translated \
-from Japanese and may have awkward grammar, unnatural phrasing, or broken sentences.
+You are an English editor for a translated Japanese RPG / visual novel, including \
+adult (18+) content. The text was already machine-translated from Japanese — your \
+job is to make it read like natural English written by someone fluent in anime / \
+visual novel localization conventions.
 
 Your job:
-- Fix grammar, spelling, and punctuation errors.
-- Make the English sound natural and fluent while keeping the EXACT same meaning.
-- Preserve the tone (casual, formal, dramatic, comedic, sexual, etc.).
-- Do NOT add, remove, or change any information — only improve how it reads.
-- Do NOT change character names, honorifics (-san, -chan, etc.), or proper nouns.
-- If the text contains code markers like «CODE1», output them exactly as-is.
-- Keep line breaks in the same positions.
-- For short menu labels or single words that are already correct, output them unchanged.
-- Output ONLY the polished text, nothing else. No explanations, no notes."""
+- Fix grammar, spelling, awkward phrasing, run-on sentences, missing articles.
+- Replace bland or overly literal word choices with idiomatic anime/VN equivalents \
+  when the tone calls for it. Examples:
+    - Generic anatomy terms → the term that fits the register (clinical, casual, \
+      crude, intimate)
+    - Stiff "I had a feeling that..." → natural "Felt like..."
+    - Translator-ese "It cannot be helped" → natural "Nothing I can do about it"
+- Preserve the tone exactly: casual stays casual, dom/sub stays dom/sub, comedic \
+  stays comedic. Do not soften or sanitize sexual or violent content.
+- Keep character voice consistent within a scene — use the translation history \
+  provided to match how each speaker has been talking.
+- Do NOT add, remove, or change information. Only improve how it reads.
+- Do NOT change character names, honorifics (-san, -chan, -sama, -senpai, -kun, \
+  -sensei, -dono), or established glossary terms.
+- Code markers like «CODE1», \\N[1], \\C[27], \\F1[...], etc. — output exactly as-is.
+- Keep line breaks (\\n) in the same positions.
+- Short menu labels, single words, and already-correct lines: output unchanged.
+- Output ONLY the polished text. No explanations, no notes, no quotation marks \
+  around the output."""
 
 
 _NAME_SYSTEM_PROMPT = (
@@ -561,6 +574,10 @@ class AIClient:
     def __init__(self, base_url: str = "http://localhost:11434", model: str = "qwen3:14b"):
         self.base_url = base_url.rstrip("/")
         self.model = model
+        # Optional separate model used only for polish_batch / polish.
+        # When None, polish reuses self.model. Set to e.g. Sugoi for the
+        # "fast translate + slow polish" two-pass workflow.
+        self.polish_model: str | None = None
         self.provider = "Ollama (Local)"  # Active provider
         self.api_key = ""                 # Cloud API key
         self.system_prompt = SYSTEM_PROMPT  # Customizable system prompt
@@ -638,6 +655,23 @@ class AIClient:
         if self.provider == "Custom":
             return self.base_url
         return None  # SDK default (OpenAI)
+
+    @contextmanager
+    def _polish_model_swap(self):
+        """Temporarily switch self.model to self.polish_model for a polish call.
+
+        No-op if polish_model is unset or matches the main model. Restores
+        the original model on exit even if the call raises.
+        """
+        if not self.polish_model or self.polish_model == self.model:
+            yield
+            return
+        original = self.model
+        self.model = self.polish_model
+        try:
+            yield
+        finally:
+            self.model = original
 
     def _chat(self, *, messages: list, stream: bool = False,
               timeout: int = 120, **kwargs) -> dict:
@@ -1587,14 +1621,15 @@ class AIClient:
         user_msg += f"Polish this:\n{clean_text}"
 
         try:
-            data = self._chat(
-                messages=[
-                    {"role": "system", "content": _POLISH_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_msg},
-                ],
-                timeout=120,
-                options=self._base_options(num_predict=1024, num_ctx=4096),
-            )
+            with self._polish_model_swap():
+                data = self._chat(
+                    messages=[
+                        {"role": "system", "content": _POLISH_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    timeout=120,
+                    options=self._base_options(num_predict=1024, num_ctx=4096),
+                )
             result = self._strip_thinking(data.get("message", {}).get("content", "").strip())
             if not result:
                 return text  # Keep original on empty response
@@ -1921,16 +1956,17 @@ class AIClient:
             opts["num_ctx"] = num_ctx
 
         try:
-            data = self._chat(
-                messages=[
-                    {"role": "system", "content": batch_sys},
-                    {"role": "user", "content": user_msg},
-                ],
-                timeout=120 + 30 * len(entries),
-                format="json",
-                json_schema=json_schema,
-                options=opts,
-            )
+            with self._polish_model_swap():
+                data = self._chat(
+                    messages=[
+                        {"role": "system", "content": batch_sys},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    timeout=120 + 30 * len(entries),
+                    format="json",
+                    json_schema=json_schema,
+                    options=opts,
+                )
             raw = self._strip_thinking(data.get("message", {}).get("content", "").strip())
             if not raw:
                 raise ConnectionError("Empty response for batch polish")

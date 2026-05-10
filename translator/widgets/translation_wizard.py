@@ -11,6 +11,7 @@ from enum import Enum, auto
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -20,6 +21,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -31,7 +33,9 @@ log = logging.getLogger(__name__)
 class WizardStep(Enum):
     IDLE = auto()
     TRANSLATE_DB = auto()
+    POLISH_DB = auto()           # polish DB names so glossary uses polished output
     TRANSLATE_DIALOGUE = auto()
+    POLISH_DIALOGUE = auto()     # polish dialogue with the secondary model
     CLEANUP = auto()
     RETRANSLATE = auto()
     WORD_WRAP = auto()
@@ -101,6 +105,42 @@ class TranslationWizard(QDialog):
         # Populate models
         self._populate_models()
 
+        layout.addSpacing(10)
+
+        # Pass mode: single-pass (fast) or dual-pass (translate with one model,
+        # polish with another — like a video editor's two-pass encoding).
+        mode_group = QGroupBox("Translation Mode")
+        mode_layout = QVBoxLayout(mode_group)
+
+        self.rb_single = QRadioButton("Single-pass — translate with one model (fast, default)")
+        self.rb_dual = QRadioButton("Dual-pass — translate fast, then polish with a different model (best quality)")
+        self.rb_single.setChecked(True)
+        mode_btns = QButtonGroup(self)
+        mode_btns.addButton(self.rb_single)
+        mode_btns.addButton(self.rb_dual)
+        mode_layout.addWidget(self.rb_single)
+        mode_layout.addWidget(self.rb_dual)
+
+        # Dual-pass model picker — hidden when single-pass is selected
+        self.dual_widget = QWidget()
+        dual_form = QHBoxLayout(self.dual_widget)
+        dual_form.setContentsMargins(20, 0, 0, 0)
+        dual_form.addWidget(QLabel("Translate model:"))
+        self.dual_translate_combo = QComboBox()
+        self.dual_translate_combo.setMinimumWidth(180)
+        dual_form.addWidget(self.dual_translate_combo)
+        dual_form.addSpacing(15)
+        dual_form.addWidget(QLabel("Polish model:"))
+        self.dual_polish_combo = QComboBox()
+        self.dual_polish_combo.setMinimumWidth(180)
+        dual_form.addWidget(self.dual_polish_combo)
+        dual_form.addStretch()
+        self.dual_widget.setVisible(False)
+        mode_layout.addWidget(self.dual_widget)
+
+        self.rb_single.toggled.connect(
+            lambda checked: self.dual_widget.setVisible(not checked))
+        layout.addWidget(mode_group)
         layout.addSpacing(10)
 
         # Steps group
@@ -283,6 +323,24 @@ class TranslationWizard(QDialog):
             self.model_combo.setCurrentText(current_model)
         self.model_combo.blockSignals(False)
 
+        # Mirror the same model list into the dual-pass dropdowns
+        for combo in (self.dual_translate_combo, self.dual_polish_combo):
+            combo.blockSignals(True)
+            combo.clear()
+            if models:
+                combo.addItems(sorted(models))
+            if current_model and current_model not in models:
+                combo.addItem(current_model)
+            combo.blockSignals(False)
+        # Sensible defaults: translate=fast (current), polish=Sugoi if seen
+        if current_model:
+            self.dual_translate_combo.setCurrentText(current_model)
+        sugoi = next((m for m in models if "sugoi" in m.lower()), None)
+        if sugoi:
+            self.dual_polish_combo.setCurrentText(sugoi)
+        elif current_model:
+            self.dual_polish_combo.setCurrentText(current_model)
+
     def _refresh_models(self):
         """Re-fetch models from Ollama."""
         self._populate_models()
@@ -313,12 +371,33 @@ class TranslationWizard(QDialog):
                     self.cb_patch]:
             cb.setEnabled(False)
 
+        # Apply dual-pass model selection if requested
+        if self.rb_dual.isChecked():
+            translate_model = self.dual_translate_combo.currentText().strip()
+            polish_model = self.dual_polish_combo.currentText().strip()
+            if translate_model:
+                self.mw.client.model = translate_model
+            if polish_model and polish_model != translate_model:
+                self.mw.client.polish_model = polish_model
+            else:
+                self.mw.client.polish_model = None
+        else:
+            # Single-pass: clear any leftover polish_model
+            self.mw.client.polish_model = None
+
         # Build step queue from checked boxes
+        # Dual-pass: polish only dialogue — DB polish is skipped because the
+        # anime/VN-flavored polish prompt risks adding flavor to short item
+        # and character names ("Iron Sword" → "Steely Iron Sword"), which
+        # would corrupt the glossary instead of improving it.
+        dual = self.rb_dual.isChecked() and self.mw.client.polish_model
         self._steps = []
         if self.cb_db.isChecked():
             self._steps.append(WizardStep.TRANSLATE_DB)
         if self.cb_dialogue.isChecked():
             self._steps.append(WizardStep.TRANSLATE_DIALOGUE)
+            if dual:
+                self._steps.append(WizardStep.POLISH_DIALOGUE)
         if self.cb_cleanup.isChecked():
             self._steps.append(WizardStep.CLEANUP)
         if self.cb_retranslate.isChecked():
@@ -372,6 +451,10 @@ class TranslationWizard(QDialog):
                 self.detail_label.setText(f"{lbl}: {done}/{total} ({pct}%)")
             elif step == WizardStep.RETRANSLATE:
                 self.detail_label.setText(f"Fixing: {done}/{total} ({pct}%)")
+            elif step == WizardStep.POLISH_DB:
+                self.detail_label.setText(f"Polishing DB: {done}/{total} ({pct}%)")
+            elif step == WizardStep.POLISH_DIALOGUE:
+                self.detail_label.setText(f"Polishing dialogue: {done}/{total} ({pct}%)")
 
     def _run_next_step(self):
         """Execute the next step in the pipeline."""
@@ -414,6 +497,26 @@ class TranslationWizard(QDialog):
                 self.mw._rebuild_glossary()
                 self.mw._wizard_active = True
                 QTimer.singleShot(200, lambda: self._start_batch_step("dialogue"))
+
+        elif step == WizardStep.POLISH_DB:
+            self.step_label.setText(
+                f"Step {step_num}/{total_steps}: Polishing database (quality model)...")
+            self.progress_bar.setRange(0, 0)
+            polish_name = self.mw.client.polish_model or "polish model"
+            self.detail_label.setText(
+                f"Refining database names with {polish_name} for glossary...")
+            self.mw._wizard_active = True
+            QTimer.singleShot(200, self._start_polish_db)
+
+        elif step == WizardStep.POLISH_DIALOGUE:
+            self.step_label.setText(
+                f"Step {step_num}/{total_steps}: Polishing dialogue (quality model)...")
+            self.progress_bar.setRange(0, 0)
+            polish_name = self.mw.client.polish_model or "polish model"
+            self.detail_label.setText(
+                f"Refining dialogue tone and fluency with {polish_name}...")
+            self.mw._wizard_active = True
+            QTimer.singleShot(200, self._start_polish_dialogue)
 
         elif step == WizardStep.CLEANUP:
             self.step_label.setText(
@@ -476,6 +579,56 @@ class TranslationWizard(QDialog):
             self._step_index += 1
             QTimer.singleShot(500, self._run_next_step)
 
+    def _start_polish_db(self):
+        """Polish DB entries (dual-pass mode) before dialogue translate."""
+        handler = self.mw.handler
+        if not handler.has_db_split:
+            # No DB split — nothing distinct to polish here
+            self._step_index += 1
+            self.mw._wizard_active = False
+            QTimer.singleShot(200, self._run_next_step)
+            return
+        to_polish = [e for e in self.mw.project.entries
+                     if e.file in handler.db_files
+                     and e.status in ("translated", "reviewed")
+                     and e.translation and e.translation.strip()]
+        if not to_polish:
+            self.detail_label.setText("Nothing to polish — skipping.")
+            self.progress_bar.setRange(0, 1)
+            self.progress_bar.setValue(1)
+            self.mw._wizard_active = False
+            self._step_index += 1
+            QTimer.singleShot(500, self._run_next_step)
+            return
+        self.mw.queue_panel.load_queue(to_polish)
+        self.mw.tabs.setCurrentWidget(self.mw.queue_panel)
+        self.mw.engine.polish_batch(to_polish)
+
+    def _start_polish_dialogue(self):
+        """Polish dialogue (or all entries on engines without DB split)."""
+        handler = self.mw.handler
+        entries = self.mw.project.entries
+        if handler.has_db_split:
+            to_polish = [e for e in entries
+                         if e.file not in handler.db_files
+                         and e.status in ("translated", "reviewed")
+                         and e.translation and e.translation.strip()]
+        else:
+            to_polish = [e for e in entries
+                         if e.status in ("translated", "reviewed")
+                         and e.translation and e.translation.strip()]
+        if not to_polish:
+            self.detail_label.setText("Nothing to polish — skipping.")
+            self.progress_bar.setRange(0, 1)
+            self.progress_bar.setValue(1)
+            self.mw._wizard_active = False
+            self._step_index += 1
+            QTimer.singleShot(500, self._run_next_step)
+            return
+        self.mw.queue_panel.load_queue(to_polish)
+        self.mw.tabs.setCurrentWidget(self.mw.queue_panel)
+        self.mw.engine.polish_batch(to_polish)
+
     def _on_batch_step_finished(self):
         """Called when a batch translate step finishes."""
         log.info("Wizard: _on_batch_step_finished called, _wizard_active=%s, step=%s",
@@ -497,6 +650,15 @@ class TranslationWizard(QDialog):
             total_translated = self.mw.project.translated_count
             self.detail_label.setText(
                 f"Done — {total_translated}/{self.mw.project.total} total entries translated.")
+        elif step == WizardStep.POLISH_DB:
+            self.detail_label.setText("Database polish complete — glossary refreshed.")
+            # Refresh glossary from polished DB names so dialogue uses them
+            self.mw._backfill_db_glossary()
+            self.mw._rebuild_glossary()
+            self.mw._autosave()
+        elif step == WizardStep.POLISH_DIALOGUE:
+            self.detail_label.setText("Dialogue polish complete.")
+            self.mw._autosave()
         elif step == WizardStep.RETRANSLATE:
             # Re-run post-processing on the freshly retranslated entries
             from ..post_processor import run_post_processing

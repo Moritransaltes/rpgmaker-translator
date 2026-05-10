@@ -516,9 +516,9 @@ class TranslationEngine(QObject):
         self._connection_failures = []
         self._server_down_emitted = False
 
-        # Polish: also group by event so one polish doesn't carry tone from
-        # another scene. Group history is disabled anyway (max_history=0)
-        # but the chunking still helps locality.
+        # Polish event-grouped, with history enabled so the polisher sees prior
+        # polished lines from the same scene — keeps tone/voice consistent
+        # across a polish pass on long events.
         event_buckets, flat = _group_by_event(to_polish)
         n = min(self.num_workers, max(1, len(event_buckets) + (1 if flat else 0)))
         worker_assignments = _distribute_events(event_buckets, flat, n)
@@ -530,11 +530,11 @@ class TranslationEngine(QObject):
             if self.batch_size > 1:
                 worker = BatchTranslationWorker(
                     self.client, entries=None, events=events, mode="polish",
-                    batch_size=self.batch_size, max_history=0)
+                    batch_size=self.batch_size, max_history=self.max_history)
             else:
                 worker = TranslationWorker(self.client, entries=None,
                                            events=events, mode="polish",
-                                           max_history=0)
+                                           max_history=self.max_history)
             worker.moveToThread(thread)
 
             thread.started.connect(worker.run)
