@@ -1012,12 +1012,23 @@ class SettingsDialog(QDialog):
         # Save per-engine overrides from the Engines tab
         # Sync main wordwrap spinner to the active engine's override
         ww_val = self.wordwrap_spin.value() if self.plugin_analyzer else 0
+        active_key = getattr(self.client, "project_type", None)
         for key, ctx, batch, workers, model_combo in self._engine_spins:
             model = model_combo.currentText()
+            # For the active engine, prefer the main Translation tab values
+            # (the Engines tab spinners may be stale if user edited the main tab)
+            if key == active_key:
+                ctx_val = self.context_spin.value() if self.parser else ctx.value()
+                batch_val = self.batch_spin.value()
+                workers_val = self.workers_spin.value()
+            else:
+                ctx_val = ctx.value()
+                batch_val = batch.value()
+                workers_val = workers.value()
             override = {
-                "context_size": ctx.value(),
-                "batch_size": batch.value(),
-                "workers": workers.value(),
+                "context_size": ctx_val,
+                "batch_size": batch_val,
+                "workers": workers_val,
                 "wordwrap_chars": ww_val,
             }
             if model and model != "(Use global)":
