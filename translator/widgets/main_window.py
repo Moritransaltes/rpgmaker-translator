@@ -728,8 +728,6 @@ class MainWindow(QMainWindow):
         self.engine.error.connect(self._on_error)
         self.engine.checkpoint.connect(self._on_checkpoint)
         self.engine.finished.connect(self._on_batch_finished)
-        self.engine.calibrating.connect(self._on_calibrating)
-        self.engine.calibration_done.connect(self._on_calibration_done)
         self.engine.server_down.connect(self._on_server_down)
 
     # ── Actions ────────────────────────────────────────────────────
@@ -3557,8 +3555,7 @@ class MainWindow(QMainWindow):
             self.client._prompt_preset = cfg["prompt_preset"]
         if "dazed_mode" in cfg:
             self.client.dazed_mode = cfg["dazed_mode"]
-        if "auto_tune" in cfg:
-            self.engine.auto_tune = cfg["auto_tune"]
+        # auto_tune setting removed; ignore legacy values silently
         if "export_review_file" in cfg:
             self._export_review_file = cfg["export_review_file"]
         if "disable_splash" in cfg:
@@ -3597,7 +3594,6 @@ class MainWindow(QMainWindow):
             # vision_model removed — main model handles image OCR
             "extract_script_strings": self.parser.extract_script_strings,
             "single_401_mode": self.parser.single_401_mode,
-            "auto_tune": self.engine.auto_tune,
             "export_review_file": self._export_review_file,
             "disable_splash": self._disable_splash,
             "show_translation_splash": self._show_translation_splash,
@@ -3646,17 +3642,6 @@ class MainWindow(QMainWindow):
         self.client.model = tag
         self._save_settings()
         self.statusbar.showMessage(f"Model set to {tag}", 5000)
-
-    # ── Auto-tune callbacks ─────────────────────────────────────────
-
-    def _on_calibrating(self, status: str):
-        """Show auto-tune calibration status in progress label."""
-        self.progress_label.setText(f"Auto-tuning: {status}")
-
-    def _on_calibration_done(self, optimal_batch_size: int):
-        """Show calibration result in status bar."""
-        self.statusbar.showMessage(
-            f"Auto-tune complete: batch_size = {optimal_batch_size}", 8000)
 
     # ── Progress ETA ───────────────────────────────────────────────
 

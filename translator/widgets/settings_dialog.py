@@ -230,15 +230,6 @@ class SettingsDialog(QDialog):
         )
         trans_form.addRow("Batch size:", self.batch_spin)
 
-        self.auto_tune_check = QCheckBox("Auto-tune batch size")
-        self.auto_tune_check.setToolTip(
-            "Automatically calibrate optimal batch size before each\n"
-            "batch translation by testing sizes 5→30 and measuring\n"
-            "throughput (entries/sec)."
-        )
-        self.auto_tune_check.toggled.connect(self._on_auto_tune_toggled)
-        trans_form.addRow(self.auto_tune_check)
-
         self.history_spin = QSpinBox()
         self.history_spin.setRange(0, 30)
         self.history_spin.setSpecialValueText("Disabled")
@@ -577,8 +568,6 @@ class SettingsDialog(QDialog):
         self.context_spin.setValue(self.parser.context_size if self.parser else 3)
         self.workers_spin.setValue(self.engine.num_workers if self.engine else 2)
         self.batch_spin.setValue(self.engine.batch_size if self.engine else 5)
-        self.auto_tune_check.setChecked(self.engine.auto_tune if self.engine else False)
-        self._on_auto_tune_toggled(self.auto_tune_check.isChecked())
         self.history_spin.setValue(self.engine.max_history if self.engine else 10)
         if self.plugin_analyzer:
             manual = getattr(self.plugin_analyzer, '_manual_chars_per_line', 0)
@@ -978,7 +967,6 @@ class SettingsDialog(QDialog):
             self.engine.num_workers = new_workers
             self.engine.batch_size = self.batch_spin.value()
             self.engine.max_history = self.history_spin.value()
-            self.engine.auto_tune = self.auto_tune_check.isChecked()
 
         if new_workers != self._orig_workers and not self.client.is_cloud:
             self._restart_ollama(new_workers)
@@ -1043,10 +1031,6 @@ class SettingsDialog(QDialog):
                 f"  (auto: {self.plugin_analyzer.chars_per_line})")
         else:
             self.wordwrap_spin.setSuffix("")
-
-    def _on_auto_tune_toggled(self, checked: bool):
-        """Grey out batch size spinner when auto-tune is enabled."""
-        self.batch_spin.setEnabled(not checked)
 
     def _restart_ollama(self, num_parallel: int):
         """Restart Ollama with OLLAMA_NUM_PARALLEL matching the new worker count."""

@@ -7,7 +7,7 @@
 <p align="center">
 Translate RPG Maker MV/MZ/VX Ace/2000/2003, Ren'Py, TyranoScript, SRPG Studio, Kirikiri, and Crowd engine games using local or cloud LLMs.<br>
 <b>Local LLM</b> (Ollama + Qwen 3.5 — free, private, no content filters) or <b>Cloud API</b> (OpenAI, Gemini, DeepSeek, Anthropic — experimental, pay-per-token).<br>
-Auto-tuned to maximize GPU speed. Pronoun-aware. Glossary-driven. Batch translation with resume.<br>
+Event-aware translation. Pronoun-aware. Glossary-driven. Batch translation with resume.<br>
 Per-engine settings, prompts, and model selection via the Engines tab.<br>
 Designed by a human, coded with <a href="https://claude.ai/code">Claude Code</a>.
 Cloud API engine ported from <a href="https://github.com/dazedanon/DazedMTLTool">DazedMTLTool</a> (MIT).
@@ -65,7 +65,6 @@ Open a game folder. Hit Batch Translate. Get a playable translation. Supports 9 
 - **Auto-retry** — Detects leftover Japanese in output and retries with a stronger prompt.
 - **Server-down detection** — If the LLM server hangs or crashes (5+ connection errors in 30s), translation pauses and prompts you to restart it. Resume picks up where it left off — no lost progress.
 - **Auto-save & checkpointing** — Saves every 25 entries during batch. Crash-proof.
-- **Auto-tune** — Tournament-style calibration finds your GPU's optimal batch size automatically. Just hit translate and it figures out the fastest settings.
 - **Per-engine configuration** — Each engine gets its own context window, batch size, workers, word wrap, model override, and system prompt via the Engines tab in Settings. A "Default (All Engines)" row lets non-tinkers set everything at once.
 - **DazedMTL Mode** — One-click toggle: batch 30, 4 workers, DazedMTL prompt. Works with both local Sugoi and cloud APIs.
 - **Open in RPG Maker** — Creates a workspace with directory junctions so you can QA and playtest translations in RPG Maker's visual editor. Auto-detects MV vs MZ.
@@ -209,7 +208,6 @@ Project entries override general entries for the same JP term.
 | Context window | 10 | Recent dialogue lines as context (higher = better coherence) |
 | Workers | 2 | Parallel events translated at once. More workers = more events in parallel. 2-3 for 12GB GPUs running 9-14B models, 4+ for cloud APIs |
 | Batch size | 5 | Lines per request within an event. Batches never cross event boundaries — a 4-line event sends 4, a 25-line event with batch=10 sends 10/10/5 |
-| Auto-tune batch size | Off | Tournament calibration tests batch sizes 5-30 and picks the fastest for your GPU |
 | Translation history | 10 | Recent translations sent as assistant messages |
 | Dark mode | On | Catppuccin dark theme |
 
@@ -268,7 +266,7 @@ All engines auto-detect when you open a game folder — no manual configuration 
 | Problem | Fix |
 |---|---|
 | "Cannot connect to Ollama" | Run `ollama serve` in a terminal first |
-| Translations are slow | Use Qwen 3.5:9b with batch size 5+ or enable DazedMTL Mode (batch 30, 4 workers). Auto-tune finds your GPU's sweet spot |
+| Translations are slow | Use Qwen 3.5:9b with batch size 5-10 or enable DazedMTL Mode (batch 30, 4 workers). Add more workers to translate more events in parallel |
 | Wrong pronouns | Assign correct genders in the actor dialog, or use Batch by Actor mode |
 | Missing control codes | Right-click > Restore Missing Codes, or they auto-restore at checkpoints |
 | Cloud API errors | Check your API key in Settings. Test Connection button verifies connectivity |
