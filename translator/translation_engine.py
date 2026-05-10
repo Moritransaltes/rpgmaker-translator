@@ -13,6 +13,75 @@ from .project_model import TranslationEntry
 log = logging.getLogger(__name__)
 
 
+# Fields that benefit from event-grouped translation (conversational flow).
+# Other fields (name, description, message1, terms, etc.) are DB-style and
+# don't have meaningful event order — they stay batch-flat.
+_EVENT_FIELDS = {"dialog", "choice", "comment", "scroll_text",
+                 "plugin_command", "comment_408"}
+
+
+def _event_key(entry) -> str | None:
+    """Return a grouping key for entries that belong to the same event.
+
+    Returns None for entries that should be treated as flat (DB fields).
+
+    Example IDs and their keys:
+      "Map001.json/Ev3(EV001)/p0/dialog_5"  -> "Map001.json/Ev3(EV001)/p0"
+      "CommonEvents.json/CE15(name)/dialog_2" -> "CommonEvents.json/CE15(name)"
+      "Actors.json/1/name"                   -> None (DB)
+    """
+    if entry.field not in _EVENT_FIELDS:
+        return None
+    parts = entry.id.rsplit("/", 1)
+    return parts[0] if len(parts) == 2 else entry.id
+
+
+def _group_by_event(entries: list) -> tuple[list, list]:
+    """Split entries into (event_buckets, flat_entries).
+
+    event_buckets: list of lists, each holding entries for one event,
+        sorted in original order.
+    flat_entries: DB / non-event entries that don't need grouping.
+    """
+    buckets: dict[str, list] = {}
+    bucket_order: list[str] = []
+    flat: list = []
+    for e in entries:
+        key = _event_key(e)
+        if key is None:
+            flat.append(e)
+        else:
+            if key not in buckets:
+                buckets[key] = []
+                bucket_order.append(key)
+            buckets[key].append(e)
+    event_buckets = [buckets[k] for k in bucket_order]
+    return event_buckets, flat
+
+
+def _distribute_events(event_buckets: list, flat: list, n_workers: int) -> list:
+    """Round-robin distribute events across workers, then append flat entries.
+
+    Each worker receives a list-of-lists where each inner list is one event.
+    Flat (DB) entries are sliced equally as a final pseudo-event per worker
+    so they still get translated, but with no shared history.
+    """
+    assignments: list[list] = [[] for _ in range(n_workers)]
+    # Round-robin events for fair load distribution
+    for i, bucket in enumerate(event_buckets):
+        assignments[i % n_workers].append(bucket)
+    # Slice flat entries roughly equally and append as standalone "events"
+    if flat:
+        k, rem = divmod(len(flat), n_workers)
+        start = 0
+        for w in range(n_workers):
+            size = k + (1 if w < rem else 0)
+            if size > 0:
+                assignments[w].append(flat[start:start + size])
+            start += size
+    return assignments
+
+
 class TranslationWorker(QObject):
     """Worker that runs translations in a background thread."""
 
@@ -22,10 +91,15 @@ class TranslationWorker(QObject):
     error = pyqtSignal(str, str)            # entry_id, error_message
 
     def __init__(self, client: AIClient, entries: list,
-                 mode: str = "translate", max_history: int = 10):
+                 mode: str = "translate", max_history: int = 10,
+                 events: list | None = None):
         super().__init__()
         self.client = client
-        self.entries = entries
+        # `events` is a list-of-lists: each inner list is one event.
+        if events is not None:
+            self.events = events
+        else:
+            self.events = [entries] if entries else []
         self.mode = mode  # "translate" or "polish"
         self.max_history = max_history
         self._cancelled = False
@@ -35,47 +109,51 @@ class TranslationWorker(QObject):
         self._cancelled = True
 
     def run(self):
-        """Process all entries in this worker's chunk."""
-        for entry in self.entries:
+        """Process events in order; reset history between events."""
+        for event_entries in self.events:
             if self._cancelled:
                 break
-
-            if self.mode == "translate":
-                # Skip already translated/reviewed (e.g. filled by TM at checkpoint)
-                if entry.status in ("translated", "reviewed", "skipped"):
-                    continue
-                if not entry.original.strip():
-                    entry.status = "skipped"
-                    continue
-            else:
-                # Polish mode: skip entries without translations
-                if not entry.translation or not entry.translation.strip():
-                    continue
-
-            preview = (entry.translation if self.mode == "polish" else entry.original)
-            preview = preview[:50].replace("\n", " ")
-            self.item_processed.emit(preview)
-
-            try:
-                if self.mode == "polish":
-                    result = self.client.polish(text=entry.translation)
-                else:
-                    result = self.client.translate(
-                        text=entry.original,
-                        context=entry.context,
-                        field=entry.field,
-                        history=self._history if self.max_history > 0 else None,
-                    )
-                self.entry_done.emit(entry.id, result)
-                # Update sliding history window after successful translation
-                if self.mode == "translate" and self.max_history > 0:
-                    self._history.append((entry.original, result))
-                    if len(self._history) > self.max_history:
-                        self._history = self._history[-self.max_history:]
-            except (ConnectionError, requests.RequestException, ValueError, OSError) as e:
-                self.error.emit(entry.id, str(e))
-
+            # Reset history at event boundary
+            self._history = []
+            for entry in event_entries:
+                if self._cancelled:
+                    break
+                self._process_entry(entry)
         self.finished.emit()
+
+    def _process_entry(self, entry):
+        """Translate or polish a single entry, updating history."""
+        if self.mode == "translate":
+            if entry.status in ("translated", "reviewed", "skipped"):
+                return
+            if not entry.original.strip():
+                entry.status = "skipped"
+                return
+        else:
+            if not entry.translation or not entry.translation.strip():
+                return
+
+        preview = (entry.translation if self.mode == "polish" else entry.original)
+        preview = preview[:50].replace("\n", " ")
+        self.item_processed.emit(preview)
+
+        try:
+            if self.mode == "polish":
+                result = self.client.polish(text=entry.translation)
+            else:
+                result = self.client.translate(
+                    text=entry.original,
+                    context=entry.context,
+                    field=entry.field,
+                    history=self._history if self.max_history > 0 else None,
+                )
+            self.entry_done.emit(entry.id, result)
+            if self.mode == "translate" and self.max_history > 0:
+                self._history.append((entry.original, result))
+                if len(self._history) > self.max_history:
+                    self._history = self._history[-self.max_history:]
+        except (ConnectionError, requests.RequestException, ValueError, OSError) as e:
+            self.error.emit(entry.id, str(e))
 
 
 class BatchTranslationWorker(QObject):
@@ -98,10 +176,15 @@ class BatchTranslationWorker(QObject):
 
     def __init__(self, client: AIClient, entries: list,
                  mode: str = "translate", batch_size: int = 5,
-                 max_history: int = 10):
+                 max_history: int = 10, events: list | None = None):
         super().__init__()
         self.client = client
-        self.entries = entries
+        # `events` is a list-of-lists: each inner list is one event's entries.
+        # If only `entries` is passed (legacy path), treat as a single flat group.
+        if events is not None:
+            self.events = events
+        else:
+            self.events = [entries] if entries else []
         self.mode = mode
         self.batch_size = batch_size
         self._target_batch_size = batch_size  # Remember original for recovery
@@ -114,16 +197,27 @@ class BatchTranslationWorker(QObject):
         self._cancelled = True
 
     def run(self):
-        """Process entries in JSON batches, halving batch size on failure."""
-        i = 0
-        while i < len(self.entries):
+        """Process events in order; within each event, batch and reset history."""
+        for event_entries in self.events:
             if self._cancelled:
                 break
+            # Reset history at event boundary so prior scenes don't leak in
+            self._history = []
+            self._run_event(event_entries)
 
-            # Build next batch, skipping already-filled entries
+        self.finished.emit()
+
+    def _run_event(self, event_entries: list):
+        """Process a single event's entries in batches without crossing into others."""
+        i = 0
+        while i < len(event_entries):
+            if self._cancelled:
+                return
+
+            # Build next batch from this event only — never crosses event boundary
             batch = []
-            while i < len(self.entries) and len(batch) < self.batch_size:
-                entry = self.entries[i]
+            while i < len(event_entries) and len(batch) < self.batch_size:
+                entry = event_entries[i]
                 i += 1
                 if self.mode == "translate":
                     if entry.status in ("translated", "reviewed", "skipped"):
@@ -138,8 +232,6 @@ class BatchTranslationWorker(QObject):
 
             if batch:
                 self._process_batch(batch)
-
-        self.finished.emit()
 
     def _process_batch(self, batch: list):
         """Try batch translation, fall back to single-entry on failure."""
@@ -356,24 +448,35 @@ class TranslationEngine(QObject):
             self.finished.emit()
 
     def _start_workers(self, to_translate: list):
-        """Spawn parallel worker threads for the main translation batch."""
+        """Spawn parallel worker threads for the main translation batch.
+
+        Distribution: each worker gets whole events round-robin so dialogue
+        within a scene is always handled by one worker in order. DB entries
+        (no event) are sliced equally across workers as standalone groups.
+        """
         self._finished_workers = 0
         self._threads = []
         self._workers = []
 
-        # Split into N sequential chunks (preserves context locality)
-        n = min(self.num_workers, len(to_translate))
-        chunks = self._split_chunks(to_translate, n)
+        event_buckets, flat = _group_by_event(to_translate)
+        n = min(self.num_workers, max(1, len(event_buckets) + (1 if flat else 0)))
+        worker_assignments = _distribute_events(event_buckets, flat, n)
 
-        for chunk in chunks:
+        log.info("Translation: %d events + %d flat entries across %d workers",
+                 len(event_buckets), len(flat), n)
+
+        for events in worker_assignments:
+            if not events:
+                continue
             thread = QThread()
             if self.batch_size > 1:
                 worker = BatchTranslationWorker(
-                    self.client, chunk, mode="translate",
+                    self.client, entries=None, events=events, mode="translate",
                     batch_size=self.batch_size, max_history=self.max_history)
             else:
                 worker = TranslationWorker(
-                    self.client, chunk, max_history=self.max_history)
+                    self.client, entries=None, events=events,
+                    max_history=self.max_history)
             worker.moveToThread(thread)
 
             thread.started.connect(worker.run)
@@ -409,17 +512,24 @@ class TranslationEngine(QObject):
         self._threads = []
         self._workers = []
 
-        n = min(self.num_workers, len(to_polish))
-        chunks = self._split_chunks(to_polish, n)
+        # Polish: also group by event so one polish doesn't carry tone from
+        # another scene. Group history is disabled anyway (max_history=0)
+        # but the chunking still helps locality.
+        event_buckets, flat = _group_by_event(to_polish)
+        n = min(self.num_workers, max(1, len(event_buckets) + (1 if flat else 0)))
+        worker_assignments = _distribute_events(event_buckets, flat, n)
 
-        for chunk in chunks:
+        for events in worker_assignments:
+            if not events:
+                continue
             thread = QThread()
             if self.batch_size > 1:
                 worker = BatchTranslationWorker(
-                    self.client, chunk, mode="polish",
+                    self.client, entries=None, events=events, mode="polish",
                     batch_size=self.batch_size, max_history=0)
             else:
-                worker = TranslationWorker(self.client, chunk, mode="polish",
+                worker = TranslationWorker(self.client, entries=None,
+                                           events=events, mode="polish",
                                            max_history=0)
             worker.moveToThread(thread)
 
