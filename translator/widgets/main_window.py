@@ -730,6 +730,7 @@ class MainWindow(QMainWindow):
         self.engine.finished.connect(self._on_batch_finished)
         self.engine.calibrating.connect(self._on_calibrating)
         self.engine.calibration_done.connect(self._on_calibration_done)
+        self.engine.server_down.connect(self._on_server_down)
 
     # ── Actions ────────────────────────────────────────────────────
 
@@ -3106,6 +3107,35 @@ class MainWindow(QMainWindow):
         """Handle translation error for a single entry."""
         self.statusbar.showMessage(f"Error translating {entry_id}: {error_msg}", 5000)
         self.queue_panel.mark_entry_error(entry_id, error_msg)
+
+    def _on_server_down(self, reason: str):
+        """Translation engine detected the server is down. Pause and prompt."""
+        self._autosave()
+        # Don't pile multiple dialogs on top of each other if more signals fire
+        if getattr(self, "_server_down_dialog_open", False):
+            return
+        self._server_down_dialog_open = True
+        try:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("LLM Server Unavailable")
+            box.setText(
+                "Translation paused — the LLM server appears to be down.\n\n"
+                "Multiple connection errors fired in a short window so we "
+                "stopped to avoid grinding through failed batches.\n\n"
+                f"Last error: {reason[:200]}\n\n"
+                "Progress has been auto-saved. Restart Ollama (or check your "
+                "API key/connection) and click Resume to continue from where "
+                "we left off."
+            )
+            resume_btn = box.addButton("Resume Translation", QMessageBox.ButtonRole.AcceptRole)
+            cancel_btn = box.addButton("Stop", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is resume_btn:
+                # Re-run batch — completed entries auto-skip
+                self.engine.translate_batch(self.project.entries)
+        finally:
+            self._server_down_dialog_open = False
 
     def _on_batch_finished(self):
         """Handle batch translation/polish completing."""

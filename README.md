@@ -60,8 +60,10 @@ Open a game folder. Hit Batch Translate. Get a playable translation. Supports 9 
 - **Two-layer glossary** — General glossary (shared, ~100 presets) + project glossary (auto-built from DB translations). Smart injection — only matching terms sent per request.
 - **Batch by Actor** — Groups dialogue by speaker gender (female > male > unknown) for maximum pronoun accuracy.
 - **Translation memory** — Deduplicates identical strings before batch. If 50 NPCs say the same line, the LLM translates it once.
-- **Translation history** — Last 10 translations sent as context so the LLM maintains consistent tone and pronouns across sequential dialogue.
+- **Event-grouped translation** — Each worker translates one whole event at a time, in order, so the LLM's history actually corresponds to prior lines in the same scene. Pronouns, tone, and callbacks stay consistent within a scene; history resets at event boundaries so unrelated scenes don't bleed into each other. More workers = more events translated in parallel, no context lost.
+- **Translation history** — Last 10 translations within the current event sent as user/assistant pairs so the LLM maintains consistent voice across the scene.
 - **Auto-retry** — Detects leftover Japanese in output and retries with a stronger prompt.
+- **Server-down detection** — If the LLM server hangs or crashes (5+ connection errors in 30s), translation pauses and prompts you to restart it. Resume picks up where it left off — no lost progress.
 - **Auto-save & checkpointing** — Saves every 25 entries during batch. Crash-proof.
 - **Auto-tune** — Tournament-style calibration finds your GPU's optimal batch size automatically. Just hit translate and it figures out the fastest settings.
 - **Per-engine configuration** — Each engine gets its own context window, batch size, workers, word wrap, model override, and system prompt via the Engines tab in Settings. A "Default (All Engines)" row lets non-tinkers set everything at once.
@@ -205,8 +207,8 @@ Project entries override general entries for the same JP term.
 | DazedMTL Mode | Off | One-click: batch 30, 4 workers, DazedMTL prompt |
 | Target Language | English | 24 languages with quality ratings |
 | Context window | 10 | Recent dialogue lines as context (higher = better coherence) |
-| Workers | 2 | Parallel translation threads (auto-set by provider) |
-| Batch size | 5 | Lines per request (auto-set: 5 local, 30 cloud) |
+| Workers | 2 | Parallel events translated at once. More workers = more events in parallel. 2-3 for 12GB GPUs running 9-14B models, 4+ for cloud APIs |
+| Batch size | 5 | Lines per request within an event. Batches never cross event boundaries — a 4-line event sends 4, a 25-line event with batch=10 sends 10/10/5 |
 | Auto-tune batch size | Off | Tournament calibration tests batch sizes 5-30 and picks the fastest for your GPU |
 | Translation history | 10 | Recent translations sent as assistant messages |
 | Dark mode | On | Catppuccin dark theme |
@@ -270,6 +272,7 @@ All engines auto-detect when you open a game folder — no manual configuration 
 | Wrong pronouns | Assign correct genders in the actor dialog, or use Batch by Actor mode |
 | Missing control codes | Right-click > Restore Missing Codes, or they auto-restore at checkpoints |
 | Cloud API errors | Check your API key in Settings. Test Connection button verifies connectivity |
+| Ollama crashes mid-batch (connection reset 10054) | OOM on KV cache. Drop workers to 1-2 for 14B models on a 12GB GPU. Server-down dialog will pause and let you Resume |
 | Plugin translations break game | Plugin entries are skipped by default. Only unskip display text (menu labels, descriptions) |
 | RM2K game won't launch | Japanese locale issue — use EasyRPG Player (auto-copied on export) or Locale Emulator |
 

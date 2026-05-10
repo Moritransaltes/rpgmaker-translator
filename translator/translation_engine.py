@@ -1,6 +1,7 @@
 """Translation engine — orchestrates LLM translation with Qt threading."""
 
 import logging
+import time
 
 import requests
 
@@ -11,6 +12,27 @@ from .auto_tuner import AutoTunerWorker
 from .project_model import TranslationEntry
 
 log = logging.getLogger(__name__)
+
+
+def _is_server_down_error(exc: Exception) -> bool:
+    """Heuristic — does this exception indicate Ollama/the server is down?"""
+    if isinstance(exc, ConnectionError):
+        return True
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return True
+    if isinstance(exc, requests.exceptions.ReadTimeout):
+        return True
+    if isinstance(exc, OSError):
+        # WinError 10054 (connection forcibly closed by remote host) etc.
+        msg = str(exc).lower()
+        if "10054" in msg or "forcibly closed" in msg or "connection reset" in msg:
+            return True
+        if "connection aborted" in msg or "connection refused" in msg:
+            return True
+    msg = str(exc).lower()
+    if "read timeout" in msg or "connection refused" in msg:
+        return True
+    return False
 
 
 # Fields that benefit from event-grouped translation (conversational flow).
@@ -89,6 +111,7 @@ class TranslationWorker(QObject):
     item_processed = pyqtSignal(str)        # text preview (for progress tracking)
     finished = pyqtSignal()
     error = pyqtSignal(str, str)            # entry_id, error_message
+    connection_error = pyqtSignal(str)      # error message — fired on each server-down event
 
     def __init__(self, client: AIClient, entries: list,
                  mode: str = "translate", max_history: int = 10,
@@ -153,6 +176,8 @@ class TranslationWorker(QObject):
                 if len(self._history) > self.max_history:
                     self._history = self._history[-self.max_history:]
         except (ConnectionError, requests.RequestException, ValueError, OSError) as e:
+            if _is_server_down_error(e):
+                self.connection_error.emit(str(e))
             self.error.emit(entry.id, str(e))
 
 
@@ -169,6 +194,7 @@ class BatchTranslationWorker(QObject):
     item_processed = pyqtSignal(str)        # text preview (for progress tracking)
     finished = pyqtSignal()
     error = pyqtSignal(str, str)            # entry_id, error_message
+    connection_error = pyqtSignal(str)      # error message — fired on each server-down event
 
     MAX_RETRIES = 2
 
@@ -297,6 +323,8 @@ class BatchTranslationWorker(QObject):
 
             except (ConnectionError, ValueError, OSError) as e:
                 log.warning("Batch attempt %d failed: %s", attempt + 1, e)
+                if _is_server_down_error(e):
+                    self.connection_error.emit(str(e))
                 if attempt < self.MAX_RETRIES - 1:
                     continue  # Retry
                 # All retries exhausted — halve batch size and fall back for this batch
@@ -333,6 +361,8 @@ class BatchTranslationWorker(QObject):
                     if len(self._history) > self.max_history:
                         self._history = self._history[-self.max_history:]
             except (ConnectionError, requests.RequestException, ValueError, OSError) as e:
+                if _is_server_down_error(e):
+                    self.connection_error.emit(str(e))
                 self.error.emit(entry.id, str(e))
 
 
@@ -346,8 +376,11 @@ class TranslationEngine(QObject):
     checkpoint = pyqtSignal()
     calibrating = pyqtSignal(str)           # status message during auto-tune
     calibration_done = pyqtSignal(int)      # optimal batch_size found
+    server_down = pyqtSignal(str)           # server appears down — reason msg
 
     CHECKPOINT_INTERVAL = 25  # auto-save every N translated entries
+    SERVER_DOWN_THRESHOLD = 5  # consecutive connection errors within window
+    SERVER_DOWN_WINDOW_S = 30  # …seconds, triggers server_down signal
 
     def __init__(self, client: AIClient, parent=None):
         super().__init__(parent)
@@ -366,6 +399,8 @@ class TranslationEngine(QObject):
         self._tuner_worker = None
         self._pending_entries = None
         self._cancelled = False
+        self._connection_failures: list[float] = []  # timestamps for window
+        self._server_down_emitted = False
 
     @property
     def is_running(self) -> bool:
@@ -392,6 +427,8 @@ class TranslationEngine(QObject):
         self._progress_count = 0
         self._translate_count = 0
         self._cancelled = False
+        self._connection_failures = []
+        self._server_down_emitted = False
 
         # Auto-tune: run calibration first if enabled
         if (self.auto_tune
@@ -483,6 +520,7 @@ class TranslationEngine(QObject):
             worker.item_processed.connect(self._on_item_processed)
             worker.entry_done.connect(self._on_entry_done)
             worker.error.connect(self.error.emit)
+            worker.connection_error.connect(self._on_connection_error)
             worker.finished.connect(self._on_worker_finished)
 
             self._threads.append(thread)
@@ -511,6 +549,9 @@ class TranslationEngine(QObject):
         self._finished_workers = 0
         self._threads = []
         self._workers = []
+        self._cancelled = False
+        self._connection_failures = []
+        self._server_down_emitted = False
 
         # Polish: also group by event so one polish doesn't carry tone from
         # another scene. Group history is disabled anyway (max_history=0)
@@ -537,6 +578,7 @@ class TranslationEngine(QObject):
             worker.item_processed.connect(self._on_item_processed)
             worker.entry_done.connect(self._on_entry_done)
             worker.error.connect(self.error.emit)
+            worker.connection_error.connect(self._on_connection_error)
             worker.finished.connect(self._on_worker_finished)
 
             self._threads.append(thread)
@@ -572,6 +614,31 @@ class TranslationEngine(QObject):
         self._translate_count += 1
         if self._translate_count % self.CHECKPOINT_INTERVAL == 0:
             self.checkpoint.emit()
+
+    def _on_connection_error(self, msg: str):
+        """Track connection errors; trigger server_down if rate threshold hit.
+
+        Stops all workers when too many connection errors fire in a short
+        window, so we don't grind through 1000 failed batches.
+        """
+        if self._server_down_emitted or self._cancelled:
+            return
+        now = time.monotonic()
+        # Drop timestamps outside the window
+        cutoff = now - self.SERVER_DOWN_WINDOW_S
+        self._connection_failures = [t for t in self._connection_failures if t > cutoff]
+        self._connection_failures.append(now)
+
+        if len(self._connection_failures) >= self.SERVER_DOWN_THRESHOLD:
+            self._server_down_emitted = True
+            log.error("Server down detected (%d connection errors in %ds): %s",
+                      len(self._connection_failures), self.SERVER_DOWN_WINDOW_S, msg)
+            # Cancel all running workers — checkpoint already saved completed work
+            self._cancelled = True
+            for w in self._workers:
+                if hasattr(w, "cancel"):
+                    w.cancel()
+            self.server_down.emit(msg)
 
     def _on_worker_finished(self):
         """Track worker completion; emit finished when all done."""
