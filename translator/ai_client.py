@@ -1347,7 +1347,8 @@ class AIClient:
                             code_map: dict, context: str = "",
                             field: str = "",
                             correction: str = "",
-                            old_translation: str = "") -> str:
+                            old_translation: str = "",
+                            has_history: bool = False) -> str:
         """Build the user prompt prefix shared by translate/variants.
 
         Args:
@@ -1358,6 +1359,10 @@ class AIClient:
             field: Entry field type (e.g. "dialog", "name").
             correction: Optional correction hint for retranslation.
             old_translation: The previous bad translation to fix.
+            has_history: True if translation history pairs are being sent
+                separately as user/assistant messages — when set, we skip
+                the redundant "Context (surrounding dialogue)" block to
+                save tokens. Speaker hint is still included (gender hint).
 
         Returns:
             Complete user message string ending with the text to translate.
@@ -1366,9 +1371,13 @@ class AIClient:
         if self.actor_context:
             parts.append(self.actor_context)
         if context:
-            parts.append(
-                f"Context (surrounding dialogue for reference, do NOT translate this):\n{context}"
-            )
+            # If history pairs are being sent separately, the bulky surrounding-
+            # dialogue dump is redundant — but keep the speaker_hint either way
+            # because it's a tiny gender disambiguator the history can't replace.
+            if not has_history:
+                parts.append(
+                    f"Context (surrounding dialogue for reference, do NOT translate this):\n{context}"
+                )
             speaker_hint = self._build_speaker_hint(context)
             if speaker_hint:
                 parts.append(speaker_hint)
@@ -1492,6 +1501,7 @@ class AIClient:
             clean_text, text, code_map,
             context=context, field=field,
             correction=correction, old_translation=old_translation,
+            has_history=bool(history),
         )
 
         # Build messages: system → history pairs → current request
@@ -1709,7 +1719,12 @@ class AIClient:
         # Use context from the first entry (entries are sequential)
         first_context = entries[0][2] if entries[0][2] else ""
         if first_context:
-            user_msg += f"Context (surrounding dialogue for reference, do NOT translate this):\n{first_context}\n\n"
+            # If we sent translation history above, the surrounding-dialogue
+            # block is redundant — history already covers prior lines in the
+            # event. Skip it to save ~200-500 tokens per request. Always keep
+            # the speaker hint (small, gender disambiguator history can't replace).
+            if not history:
+                user_msg += f"Context (surrounding dialogue for reference, do NOT translate this):\n{first_context}\n\n"
             speaker_hint = self._build_speaker_hint(first_context)
             if speaker_hint:
                 user_msg += speaker_hint + "\n"

@@ -410,6 +410,10 @@ class TranslationEngine(QObject):
     def translate_batch(self, entries: list):
         """Start batch translation with parallel workers.
 
+        Pre-fills untranslated entries whose original text was already
+        translated elsewhere in the project (cross-project translation
+        memory), saving the LLM trips for repeated lines.
+
         If auto_tune is enabled and conditions are met (local Ollama,
         batch_size > 1, enough entries), runs a calibration phase first
         to find the optimal batch_size before starting the main batch.
@@ -422,6 +426,29 @@ class TranslationEngine(QObject):
         if not to_translate:
             self.finished.emit()
             return
+
+        # Cross-project translation memory: pre-fill duplicates from
+        # entries that are already translated elsewhere in the project.
+        memory = self._build_translation_memory(entries)
+        prefilled = 0
+        if memory:
+            for e in to_translate:
+                tl = memory.get(e.original)
+                if tl:
+                    e.translation = tl
+                    e.status = "translated"
+                    prefilled += 1
+                    # Emit so UI updates and checkpoint counter increments
+                    self.entry_done.emit(e.id, tl)
+            if prefilled:
+                log.info("Translation memory: pre-filled %d/%d entries from "
+                         "already-translated duplicates", prefilled, len(to_translate))
+            # Re-filter — the freshly translated ones drop out
+            to_translate = [e for e in to_translate if e.status == "untranslated"]
+            if not to_translate:
+                self.checkpoint.emit()  # save the prefilled work
+                self.finished.emit()
+                return
 
         self._total = len(to_translate)
         self._progress_count = 0
@@ -651,6 +678,26 @@ class TranslationEngine(QObject):
             self._threads = []
             self._workers = []
             self.finished.emit()
+
+    @staticmethod
+    def _build_translation_memory(entries: list) -> dict[str, str]:
+        """Build {original: translation} from already-translated entries.
+
+        Used to pre-fill untranslated entries that match an already-translated
+        original elsewhere in the project — saves redundant LLM calls for
+        repeated lines (greetings, "...", "Yes", boss intros said by 50 NPCs).
+        """
+        memory: dict[str, str] = {}
+        for e in entries:
+            if e.status not in ("translated", "reviewed"):
+                continue
+            if not e.original or not e.translation:
+                continue
+            # First-write-wins; reviewed translations are already preferred
+            # over fresh ones because they appear later in batches typically.
+            if e.original not in memory:
+                memory[e.original] = e.translation
+        return memory
 
     @staticmethod
     def _split_chunks(items: list, n: int) -> list:
